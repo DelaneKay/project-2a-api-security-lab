@@ -49,6 +49,7 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 In **WSL**, I checked that I was in the Juice Shop source checkout and that the project files needed for scanning were there:
 
 ```bash
+# WSL workstation
 cd ~/project-2a/juice-shop-source
 pwd
 ls -l package.json package-lock.json
@@ -61,6 +62,7 @@ The checkout had `package.json`, but no `package-lock.json` or `node_modules` fo
 In WSL, my first version check returned `node: command not found` and `npm: command not found`. The source checkout was here, so I installed Node.js and npm in WSL:
 
 ```bash
+# WSL workstation
 node --version
 npm --version
 sudo apt update
@@ -72,6 +74,7 @@ npm --version
 My first Snyk test stopped because the checkout had no `node_modules` directory. I installed the project dependencies in WSL, then confirmed the directory had been created:
 
 ```bash
+# WSL workstation
 cd ~/project-2a/juice-shop-source
 "$HOME/.local/bin/snyk" test
 npm install
@@ -85,6 +88,7 @@ That gave Snyk a dependency tree to scan. Since the checkout had no lockfile, I 
 I installed the Snyk CLI in my WSL user directory, added it to `PATH`, checked the version, and authenticated:
 
 ```bash
+# WSL workstation
 npm install --prefix "$HOME/.local" snyk
 export PATH="$HOME/.local/bin:$PATH"
 "$HOME/.local/bin/snyk" --version
@@ -100,6 +104,7 @@ Docker was not installed on the target, and its isolated network could not downl
 Before installing Docker, I checked free disk space, the Ubuntu release, the available Docker package version, and the packages APT planned to install. I ran these commands on the **target server**, reached from WSL through the admin node:
 
 ```bash
+# Target server
 df -h /
 cat /etc/os-release
 apt-cache policy docker.io
@@ -120,7 +125,7 @@ WSL listed more packages in its simulation because WSL and the target already ha
 APT downloaded `docker.io`, `containerd`, and `runc`, but skipped five dependencies that were already installed in WSL. I downloaded those package files separately, then staged the eight packages the target needed:
 
 ```bash
-# WSL workstation: download without installing Docker here.
+# WSL workstation
 sudo apt-get --download-only --no-install-recommends install docker.io
 ls -lh /var/cache/apt/archives/*.deb
 sudo apt-get --download-only --reinstall --no-install-recommends install bridge-utils dns-root-data dnsmasq-base pigz ubuntu-fan
@@ -185,7 +190,7 @@ All eight packages reported `OK` on the target too, confirming that the transfer
 The first offline APT attempt hit a problem. On the **target server**, the `--no-download` simulation failed with `Unable to fetch some archives` and made no changes. A simulation using the local package paths showed the eight-package plan, but the real APT install still tried to fetch archives and failed. I kept all three target-side commands here to show what I tried and where it stopped:
 
 ```bash
-# Target server: failed simulation at archive lookup.
+# Target server
 cd ~/project-2a/staging/docker-packages
 apt-get --no-download -s install ./*.deb
 
@@ -199,6 +204,7 @@ sudo apt-get --no-download install ./*.deb
 Since the package files were already on the **target server**, I used `dpkg` to install them locally:
 
 ```bash
+# Target server
 cd ~/project-2a/staging/docker-packages
 sudo dpkg -i ./*.deb
 ```
@@ -208,6 +214,7 @@ The installation completed: the output showed the Docker packages unpacked and c
 After the install, I checked Docker and the network from the **target server**:
 
 ```bash
+# Target server
 systemctl is-active docker
 ip route
 ```
@@ -221,6 +228,7 @@ The target had no internet route, so I used the `bkimminich/juice-shop:latest` i
 I saved the image and created a checksum file in **WSL**:
 
 ```bash
+# WSL workstation
 docker save --output ~/project-2a/staging/juice-shop.tar bkimminich/juice-shop:latest
 cd ~/project-2a/staging
 sha256sum juice-shop.tar > juice-shop.tar.sha256
@@ -230,12 +238,14 @@ ls -lh juice-shop.tar juice-shop.tar.sha256
 The archive was about **347 MB**. I copied the archive and its checksum file from **WSL to the admin node**:
 
 ```bash
+# WSL workstation
 scp -i ~/.ssh/mds_admin_ed25519 juice-shop.tar juice-shop.tar.sha256 mdsadmin@192.168.56.101:~/project-2a/staging/
 ```
 
 On the **admin node**, I checked the archive against its manifest:
 
 ```bash
+# Admin node
 cd ~/project-2a/staging
 sha256sum -c juice-shop.tar.sha256
 ```
@@ -243,12 +253,14 @@ sha256sum -c juice-shop.tar.sha256
 The check returned `juice-shop.tar: OK`. From the **admin node**, I copied the verified archive and checksum file to the target:
 
 ```bash
+# Admin node
 scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/juice-shop.tar ~/project-2a/staging/juice-shop.tar.sha256 mdsadmin@192.168.77.10:~/project-2a/staging/
 ```
 
 On the **target server**, I ran the same checksum check:
 
 ```bash
+# Target server
 cd ~/project-2a/staging
 sha256sum -c juice-shop.tar.sha256
 ```
@@ -256,6 +268,7 @@ sha256sum -c juice-shop.tar.sha256
 The target also returned `juice-shop.tar: OK`. I loaded the verified image archive into Docker on the **target server**:
 
 ```bash
+# Target server
 sudo docker load --input ~/project-2a/staging/juice-shop.tar
 ```
 
@@ -264,7 +277,7 @@ Docker reported `Loaded image: bkimminich/juice-shop:latest`. I had loaded the i
 Before starting Juice Shop, I checked the image on the **target server**. My first attempt from WSL failed because `sudo` needed a terminal. The target-side command was the same on retry; I allocated a terminal at both SSH hops so the password prompt could work:
 
 ```bash
-# Target server: the first, non-interactive attempt failed at sudo authentication.
+# Target server
 sudo docker image inspect --format '{{.Id}}' bkimminich/juice-shop:latest
 
 # Target server: retry in an interactive target shell.
@@ -289,6 +302,7 @@ docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-shop:la
 I ran these checks on the **target server** to compare the full image ID, layer list, and platform:
 
 ```bash
+# Target server
 sudo docker image ls --no-trunc bkimminich/juice-shop:latest
 sudo docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-shop:latest | sha256sum
 sudo docker image inspect --format 'OS={{.Os}} ARCH={{.Architecture}} SIZE={{.Size}}' bkimminich/juice-shop:latest
@@ -299,6 +313,7 @@ The config blob hashed to `2d370ec1…`. Both layer-list checks returned `36fd80
 Once the image checks were complete, I started Juice Shop on the **target server**, bound it to the private lab address, and checked that it was running:
 
 ```bash
+# Target server
 sudo docker run -d --name juice-shop --restart unless-stopped -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest
 sudo docker ps --filter name=juice-shop
 ```
@@ -308,12 +323,14 @@ Docker returned container ID `5440dc6a…`. The **target server** showed the con
 I checked the application from the **admin node** with this request; it returned `HTTP 200`:
 
 ```bash
+# Admin node
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 http://192.168.77.10:3000/
 ```
 
 Windows could not reach the target's isolated address directly. I opened an SSH tunnel from **WSL** through the admin node and left that terminal running:
 
 ```bash
+# WSL workstation
 ssh -N -L 3000:192.168.77.10:3000 -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
 ```
 
