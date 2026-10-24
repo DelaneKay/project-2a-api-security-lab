@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 13406)
+Total output lines: 923
+
 # My Project 2A SCA, SAST and DAST Scanning: Application and API Security Assessment Journey
 
 - **Core technologies:** Ubuntu in WSL, a hardened Ubuntu admin node, a hardened Ubuntu target node, Docker, OWASP Juice Shop, Snyk Open Source, Snyk Code, and OWASP ZAP.
@@ -286,13 +289,13 @@ The browser opened Juice Shop at `http://localhost:3000`. At that point, the app
 
 ## 2. DAST — Dynamic Application Security Testing
 
-### 2.1 I ran ZAP baseline and AJAX Spider scans
+### 2.1 I ran ZAP baseline and AJAX-enabled baseline scans
 
 I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which I investigated later before the API scan continued on port 3001. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
-The AJAX-enabled baseline discovered **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** in its separate run. A direct Spider API crawl found 94 traditional Spider URLs and 91 AJAX Spider URLs. The AJAX crawl exposed API routes and client-loaded resources that the traditional crawl missed. These counts came from different runs/settings; I recorded them as crawl coverage rather than comparing them as vulnerability counts.
+The AJAX-enabled baseline discovered **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** in its separate run. These are baseline scan results; the later Spider API crawl and its 94 traditional Spider URLs and 91 AJAX Spider URLs are documented in Section 2.2.
 
-**Problems I encountered:** An AJAX baseline attempt hit connection refused while the tunnel was down. Later, the direct AJAX Spider API request with inScope=true failed because the starting URL was not in ZAP scope. I retried with inScope=false, but that request returned Internal Error. The eventual 91-URL AJAX result is preserved, although the exact successful start request is not. These setup errors were not application vulnerabilities.
+**Problem I encountered:** One AJAX-enabled baseline attempt hit connection refused while the SSH tunnel was down. After the port-3000 path responded again, I reran the scan successfully. The separate AJAX Spider API scope errors are recorded in Section 2.2. These setup errors were not application vulnerabilities.
 
 The scan was black-box: ZAP evaluated externally visible behavior and did not inspect source code. I ran these black-box scans before cloning the source for the later SAST and SCA stages. For API-specific probing, I describe ZAP's API Scan with the API Security results in Section 5.
 
@@ -360,8 +363,15 @@ docker run --rm -t \
   zap-baseline.py -t http://host.docker.internal:3000 -j -r juice-shop-ajax.html
 ```
 
-I checked the saved report and extracted its URL strings with these commands:
-The report summary did not show the full URL inventory, so I reran the AJAX-enabled baseline to save a JSON report as well as HTML. This was still a passive baseline scan; the JSON file was a ZAP report, not an export of the full Spider result list:
+I checked that the AJAX HTML report existed, then previewed its URL-looking strings:
+
+```bash
+# WSL workstation
+ls -lh ~/project-2a/zap-reports/juice-shop-ajax.html
+grep -o 'http[^"< ]*' ~/project-2a/zap-reports/juice-shop-ajax.html | sort -u | head -n 30
+```
+
+The HTML report did not provide a complete URL inventory. I reran the AJAX-enabled baseline to save a JSON report as well as HTML. This was still a passive baseline scan; the JSON report was not a complete Spider URL export:
 
 ```bash
 # WSL workstation
@@ -373,18 +383,10 @@ docker run --rm -t \
   -J juice-shop-ajax.json -r juice-shop-ajax.html
 ```
 
-I checked the saved report and extracted its URL strings with these commands:
-
-```bash
-# WSL workstation
-ls -lh ~/project-2a/zap-reports/juice-shop-ajax.html
-grep -o 'http[^"< ]*' ~/project-2a/zap-reports/juice-shop-ajax.html | sort -u | head -n 30
-```
-
-The JSON rerun above saved a ZAP report; it was not a complete Spider URL export. I used the running ZAP API for the actual Spider URL lists below. A full-scan command using zap-full-scan.py was suggested once, but the preserved completed results are from zap-baseline.py, so I do not count the full scan as a completed assessment.
+A full-scan command using zap-full-scan.py was suggested once, but the preserved completed results are from zap-baseline.py, so I do not count the full scan as a completed assessment.
 The ZAP container must resolve host.docker.internal to the WSL host and reach the forwarded Juice Shop port 3000. If it cannot, I check scanner-to-target connectivity before treating the output as a scan result. The target remains the isolated lab instance.
 
-#### I used the ZAP API to compare the two crawlers
+### 2.2 I used the ZAP API to compare the two crawlers
 
 I wanted to know whether the traditional Spider had reached the application's JavaScript-loaded API routes. After the baseline scans, I started a temporary ZAP daemon in WSL and queried its Spider API. The chat retains the server-start command and the traditional Spider calls. It also retains the first AJAX request with inScope=true, which produced the error "The starting URI is not in scope", followed by a retry with inScope=false that returned Internal Error. The eventual AJAX result list contained 91 URLs, but the exact successful request sequence was not retained. I record that limitation instead of attributing the 91-URL result to a command whose success is not evidenced.
 
@@ -410,121 +412,7 @@ I checked the container, its logs and port mapping, then waited for the API vers
 docker ps --filter name=zap-crawl-api
 docker logs --tail 80 zap-crawl-api
 docker port zap-crawl-api 8090/tcp
-curl -sS http://127.0.0.1:8090/JSON/core/view/version/
-```
-
-I started the traditional Spider, checked it until it reached 100%, and retrieved its URL list. The transcript used scan ID 0:
-
-```bash
-# WSL workstation
-curl -sS --get 'http://127.0.0.1:8090/JSON/spider/action/scan/' \
-  --data-urlencode 'url=http://host.docker.internal:3000' \
-  --data-urlencode 'recurse=true' \
-  --data-urlencode 'subtreeOnly=true'
-curl -sS --get 'http://127.0.0.1:8090/JSON/spider/view/status/' \
-  --data-urlencode 'scanId=0'
-curl -sS --get 'http://127.0.0.1:8090/JSON/spider/view/results/' \
-  --data-urlencode 'scanId=0' \
-  -o ~/project-2a/zap-reports/spider-results.json
-```
-
-The traditional crawl returned 94 URLs and no /api/ paths. My first AJAX request restricted the crawl to ZAP's existing scope. Juice Shop had not been added to scope, so this attempt did not crawl the site:
-
-```bash
-# WSL workstation
-curl -sS --get 'http://127.0.0.1:8090/JSON/ajaxSpider/action/scan/' \
-  --data-urlencode 'url=http://host.docker.internal:3000' \
-  --data-urlencode 'inScope=true' \
-  --data-urlencode 'subtreeOnly=true'
-curl -sS http://127.0.0.1:8090/JSON/ajaxSpider/view/status/
-docker logs --tail 80 zap-crawl-api
-```
-
-The log reported "The starting URI is not in scope". I retried with inScope=false; ZAP then returned Internal Error, so I inspected the logs rather than treating that attempt as a completed crawl:
-
-```bash
-# WSL workstation
-curl -sS --get 'http://127.0.0.1:8090/JSON/ajaxSpider/action/scan/' \
-  --data-urlencode 'url=http://host.docker.internal:3000' \
-  --data-urlencode 'inScope=false' \
-  --data-urlencode 'subtreeOnly=true'
-docker logs --tail 80 zap-crawl-api
-```
-
-After the successful AJAX crawl stopped, I saved the result list. The chat preserves these retrieval commands and the resulting 91-URL list, but not the exact successful scan-start parameters:
-
-```bash
-# WSL workstation
-curl -sS http://127.0.0.1:8090/JSON/ajaxSpider/view/status/
-curl -sS 'http://127.0.0.1:8090/JSON/ajaxSpider/view/results/' \
-  -o ~/project-2a/zap-reports/ajax-spider-results.json
-python3 -c 'import json; p="/home/devsecops/project-2a/zap-reports/ajax-spider-results.json"; r=json.load(open(p)).get("results", []); print(f"AJAX Spider URLs: {len(r)}"); print("\n".join(map(str, r[:20])))'
-```
-I counted URLs and checked which paths were new to the AJAX result. In the retained run, ten exact URL strings appeared in both lists and 81 strings appeared only in AJAX. Socket.IO query values made some URLs look unique even when they represented the same route. I treated that comparison as **discovery coverage**, then used the discovered API routes later in Section 5.
-
-```bash
-# WSL workstation
-python3 - <<'PY'
-import json
-from pathlib import Path
-from urllib.parse import urlparse
-
-root = Path.home() / 'project-2a/zap-reports'
-def urls(filename):
-    items = json.loads((root / filename).read_text()).get('results', [])
-    return {item if isinstance(item, str) else item.get('url')
-            for item in items} - {None}
-
-spider = urls('spider-results.json')
-ajax = urls('ajax-spider-results.json')
-for name, urls in [('traditional', spider), ('AJAX', ajax)]:
-    print(name, 'URLs:', len(urls))
-    print(name, '/api/ paths:', sum('/api/' in urlparse(url).path for url in urls))
-print('shared exact URLs:', len(spider & ajax))
-print('AJAX-only exact URLs:', len(ajax - spider))
-PY
-```
-
-
-## 3. SAST — Static Application Security Testing
-
-### 3.1 I cloned the matching Juice Shop source and prepared Snyk
-
-After I confirmed Juice Shop was running on the target, I prepared the source checkout in **WSL** for code analysis. The source folder was missing when I checked it, so I cloned the official `v20.3.0` release to match the application version. I checked Git first; it reported version `2.53.0`.
-
-```bash
-# WSL workstation
-git --version
-cd ~/project-2a
-git clone --depth 1 --branch v20.3.0 https://github.com/juice-shop/juice-shop.git juice-shop-source
-```
-
-I installed the Snyk CLI as a user executable in WSL. The first suggested system-wide location, `/usr/local/bin`, was owned by root, so I placed the binary under my home directory instead:
-
-```bash
-# WSL workstation
-ls -ld /usr/local/bin
-mkdir -p "$HOME/.local/bin"
-curl -fsSL https://static.snyk.io/cli/latest/snyk-linux -o "$HOME/.local/bin/snyk"
-chmod +x "$HOME/.local/bin/snyk"
-"$HOME/.local/bin/snyk" --version
-```
-
-The CLI reported version `1.1308.3`. I authenticated it before scanning. The browser OAuth callback returned “Not Found,” and checking the CLI showed that no API credential had been set. I inspected the available authentication options and switched to token-based authentication; the token was entered at the hidden terminal prompt and is not included here:
-
-```bash
-# WSL workstation
-"$HOME/.local/bin/snyk" auth
-"$HOME/.local/bin/snyk" config get api
-"$HOME/.local/bin/snyk" auth --help
-"$HOME/.local/bin/snyk" auth --auth-type=token
-```
-
-The final token-based flow authenticated successfully. I then confirmed that the checkout existed and enabled Snyk Code for the selected organization when the first scan reported the feature was disabled. Enabling it was a Snyk web-console action, not a shell command.
-
-### 3.2 I ran Snyk Code against the source
-
-SAST was **white-box** in this project because Snyk Code analyzed the source checkout. My first scan attempt returned a message that Snyk Code was disabled for the selected organization, so it produced no findings. I enabled Snyk Code for that organization in the Snyk web console, then repeated the same command from the repository. The console change was not a shell command.
+curl -sS http://127.0.0.1:8090/J…1406 tokens truncated…e was not a shell command.
 
 **First attempt (feature disabled; no scan findings were produced):**
 
