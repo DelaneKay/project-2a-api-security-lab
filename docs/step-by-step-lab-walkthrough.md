@@ -767,8 +767,7 @@ The API Scan was unauthenticated, so it did not test the two-account authorizati
 
 ```bash
 # WSL workstation; run from the portfolio checkout root.
-python3 docs/scripts/api-security/inspect_zap_api_alerts.py
-python3 docs/scripts/api-security/extract_zap_server_errors.py
+python3 docs/scripts/api-security/extract_zap_sql_alert.py
 ```
 
 ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge.
@@ -784,8 +783,6 @@ grep -RIn --include='*.ts' 'req\.query\|sequelize\.literal' routes lib
 ```
 
 This review found that `routes/search.ts` constructs a SQL expression using the product-search query value. It confirmed unsafe construction in source, but did not demonstrate data extraction.
-
-I used the same alert helper to inspect the reported CORS, private-IP, timestamp, and content-type alerts. The server-error helper surfaced the 17 observed 500 responses for triage. The available excerpts did not establish sensitive stack-trace disclosure, authenticated cross-origin data access, or secret exposure; I treated the 500s as error-handling signals, not 17 confirmed vulnerabilities. The API and DAST appendices preserve the counts and examples with their limits.
 
 I then inspected selected responses and kept tool evidence separate from manual evidence. A route returning `200` is not automatically a vulnerability: the response data and intended access policy matter.
 
@@ -808,13 +805,6 @@ curl -sS -D - -o /dev/null --max-time 10 \
 ```
 
 I recorded HTTP status, selected response headers, and the body where available. I reviewed the application-configuration response for the disclosed IP/timestamp values and common secret-like property names; no secret was confirmed. `/api/Users` returned `401` anonymously. These requests do not change application state.
-
-I also compared a normal search and a single-quote search during one unstable tunnel period. Both timed out, so that retest added no runtime evidence and I excluded it from the injection finding. The separate ZAP API Scan had produced the HTTP 500 alert on the quote-containing search, and the source review showed the unsafe SQL construction. I saved the metadata-only comparison as a Python helper so the safe check can be repeated later:
-
-```bash
-# WSL workstation; run from the portfolio checkout root with the tunnel open.
-python3 docs/scripts/api-security/compare_product_search_responses.py
-```
 
 For example, the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. This was recorded as a potential business-data exposure for an owner to assess, because the evidence did not define whether the lab intended those values to be public. The anonymous `/api/Users` request returned `401`, which was positive evidence that anonymous access was denied on that route.
 
@@ -891,7 +881,26 @@ The preserved terminal result was `Unsigned-token request: HTTP 200; returned ba
 
 **Safety and evidence note:** The purpose was to demonstrate authentication validation in the training app. I did not test real accounts or a production service, and I did not use the test to modify basket state.
 
-### 5.4 I combined manual and tool results without treating them as duplicates
+### 5.4 I inspected the remaining ZAP alerts and checked the search result safely
+
+After the account and token checks, I returned to the ZAP API report and reviewed the CORS, private-IP, timestamp, and content-type alerts. I also extracted the Server Error response code entries. The helpers print report excerpts only; they do not send requests:
+
+```bash
+# WSL workstation; run from the portfolio checkout root.
+python3 docs/scripts/api-security/inspect_zap_api_alerts.py
+python3 docs/scripts/api-security/extract_zap_server_errors.py
+```
+
+The report listed 17 server-error responses. The available examples included invalid base paths and scanner-generated probes, without a sensitive response body or stack trace. I treated them as error-handling signals, not 17 confirmed vulnerabilities. The CORS and disclosure alerts also required context: the evidence did not establish authenticated cross-origin access or secret exposure.
+
+I then compared a normal product search with a single-quote search, using a Python helper that prints only status, content type, and response size. Both requests timed out while the port-3001 tunnel was unstable, so this retest provided no new SQL injection evidence:
+
+```bash
+# WSL workstation; run from the portfolio checkout root with the tunnel open.
+python3 docs/scripts/api-security/compare_product_search_responses.py
+```
+
+### 5.5 I combined manual and tool results without treating them as duplicates
 
 I kept the source of each result clear. My two-account BOLA and unsigned-JWT checks were manual; ZAP's unauthenticated API scan did not reproduce them. ZAP raised the product-search SQL alert, and I used source review to confirm unsafe query construction. For CORS and configuration behavior, I compared ZAP's repeated observations with my manual response checks rather than counting the same behavior twice.
 
