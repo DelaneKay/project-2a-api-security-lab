@@ -73,14 +73,6 @@ npm --version
 
 My first Snyk test stopped because the checkout had no `node_modules` directory. I installed the project dependencies in WSL, then confirmed the directory had been created:
 
-```bash
-# WSL workstation
-cd ~/project-2a/juice-shop-source
-"$HOME/.local/bin/snyk" test
-npm install
-ls -ld node_modules
-```
-
 That gave Snyk a dependency tree to scan. Since the checkout had no lockfile, I recorded that these locally resolved versions might not exactly match the original build.
 
 ### 1.3 I checked Snyk CLI access
@@ -342,6 +334,8 @@ The browser opened Juice Shop at `http://localhost:3000`. At that point, the app
 
 With Juice Shop running on the target server and reachable through the SSH tunnel, I moved to the source checkout in **WSL**. SCA examines the packages a project depends on and compares their versions with known vulnerability advisories. It complements the live application test: here I was assessing the local source tree and its resolved packages, not sending requests to the running container.
 
+I had prepared Node.js, npm, and the Snyk CLI earlier in Section 1, before the first Docker installation. In WSL, I used `sudo apt update` and `sudo apt install nodejs npm` after `node` and `npm` were reported as missing. I then installed the Snyk CLI under my home directory with `npm install --prefix "$HOME/.local" snyk`, added `$HOME/.local/bin` to `PATH`, and authenticated with `snyk auth`. The full prerequisite command block is in Section 1 so the event order stays clear. The chat confirms the commands were missing and that I installed them; it does not include the package manager's full installation log, so I have not invented one here.
+
 I first checked the project manifest and whether a lockfile was present. The checkout contained `package.json`, but no `package-lock.json`:
 
 ```bash
@@ -357,7 +351,7 @@ I then tried Snyk Open Source. It stopped before scanning because the checkout d
 "$HOME/.local/bin/snyk" test
 ```
 
-Snyk returned `SNYK-CLI-0000` with **“Missing node_modules folder: we can't test without dependencies. Please run 'npm install' first.”** This was a setup error, not a vulnerability result. The scan needed a locally resolved dependency tree before it could report package versions.
+Snyk returned `SNYK-CLI-0000` with **“Missing node_modules folder: we can't test without dependencies. Please run 'npm install' first.”** This was a setup error, not a vulnerability result. The scan needed a locally resolved dependency tree before it could report package versions. This error was separate from the earlier missing-Node/npm problem: Node.js, npm, and the Snyk CLI were already installed; the missing item was Juice Shop's project dependencies.
 
 ### 2.2 I installed the project dependencies and reran Snyk
 
