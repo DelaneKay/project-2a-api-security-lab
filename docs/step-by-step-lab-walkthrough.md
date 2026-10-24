@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 13406)
-Total output lines: 923
+Warning: truncated output (original token count: 13825)
+Total output lines: 946
 
 # My Project 2A SCA, SAST and DAST Scanning: Application and API Security Assessment Journey
 
@@ -47,7 +47,30 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 ## 1. Install Docker and start Juice Shop
 
-### 1.1 I installed Docker on the isolated target before scanning
+### 1.1 I prepared the cached image in WSL and installed Docker on the isolated target
+
+Before preparing Docker on the target, I checked the Docker engine available to my WSL workstation. The CLI was installed, but at first my `devsecops` account could not access `/var/run/docker.sock`. I confirmed the selected context and socket permissions, then added my personal WSL account to the `docker` group. Docker group membership grants root-level control over WSL, so this was a deliberate workstation access change. I closed and reopened the WSL shell before checking the group membership:
+
+```bash
+# WSL workstation
+docker context ls
+ls -l /var/run/docker.sock
+sudo usermod -aG docker devsecops
+# I closed and reopened the WSL shell before running these checks.
+id
+docker info
+```
+
+The `default` context pointed to `/var/run/docker.sock`. After reopening the shell, `id` showed the `docker` group and `docker info` showed a working Docker Desktop engine. I checked the running containers so I would not disturb another project, then confirmed that Juice Shop was already cached locally:
+
+```bash
+# WSL workstation
+docker ps
+docker image ls
+docker image inspect --format '{{.Id}} {{json .RepoDigests}}' bkimminich/juice-shop:latest
+```
+
+Two existing containers belonged to my `learn-to-cloud-app` project and used loopback-bound ports, so I left them running. The Juice Shop image was already available as `bkimminich/juice-shop:latest`; I recorded its image ID and repository digest before transferring it. The WSL Docker Desktop engine and the target's Docker engine were separate. The cached image could not run on the isolated target until I installed Docker there and moved the image archive across the lab nodes.
 
 Docker was not installed on the target, and its isolated network could not download the packages. I prepared the Ubuntu packages in WSL, transferred them through the admin node, and checked their checksums at each step. This was the first Docker installation; the later Docker failure happened separately in the lab.
 
@@ -412,7 +435,50 @@ I checked the container, its logs and port mapping, then waited for the API vers
 docker ps --filter name=zap-crawl-api
 docker logs --tail 80 zap-crawl-api
 docker port zap-crawl-api 8090/tcp
-curl -sS http://127.0.0.1:8090/J…1406 tokens truncated…e was not a shell command.
+curl -sS http://127.0.0.1:8090/JSON/core/view/version/
+```
+
+I started the traditional Spider, checked it until it reached 100%, and retrieved its URL list. The transcript used scan ID 0:
+
+```bash
+# WSL workstation
+curl -sS --get 'http://127.0.0.1:8090/JSON/spider/action/scan/' \
+  --data-urlencode 'url=http://host.docker.internal:3000' \
+  --data-urlencod…825 tokens truncated…source folder was missing when I checked it, so I cloned the official `v20.3.0` release to match the application version. I checked Git first; it reported version `2.53.0`.
+
+```bash
+# WSL workstation
+git --version
+cd ~/project-2a
+git clone --depth 1 --branch v20.3.0 https://github.com/juice-shop/juice-shop.git juice-shop-source
+```
+
+I installed the Snyk CLI as a user executable in WSL. The first suggested system-wide location, `/usr/local/bin`, was owned by root, so I placed the binary under my home directory instead:
+
+```bash
+# WSL workstation
+ls -ld /usr/local/bin
+mkdir -p "$HOME/.local/bin"
+curl -fsSL https://static.snyk.io/cli/latest/snyk-linux -o "$HOME/.local/bin/snyk"
+chmod +x "$HOME/.local/bin/snyk"
+"$HOME/.local/bin/snyk" --version
+```
+
+The CLI reported version `1.1308.3`. I authenticated it before scanning. The browser OAuth callback returned “Not Found,” and checking the CLI showed that no API credential had been set. I inspected the available authentication options and switched to token-based authentication; the token was entered at the hidden terminal prompt and is not included here:
+
+```bash
+# WSL workstation
+"$HOME/.local/bin/snyk" auth
+"$HOME/.local/bin/snyk" config get api
+"$HOME/.local/bin/snyk" auth --help
+"$HOME/.local/bin/snyk" auth --auth-type=token
+```
+
+The final token-based flow authenticated successfully. I then confirmed that the checkout existed and enabled Snyk Code for the selected organization when the first scan reported the feature was disabled. Enabling it was a Snyk web-console action, not a shell command.
+
+### 3.2 I ran Snyk Code against the source
+
+SAST was **white-box** in this project because Snyk Code analyzed the source checkout. My first scan attempt returned a message that Snyk Code was disabled for the selected organization, so it produced no findings. I enabled Snyk Code for that organization in the Snyk web console, then repeated the same command from the repository. The console change was not a shell command.
 
 **First attempt (feature disabled; no scan findings were produced):**
 
