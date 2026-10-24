@@ -338,28 +338,54 @@ The browser opened Juice Shop at `http://localhost:3000`. At that point, the app
 
 ## 2. SCA — Software Composition Analysis
 
-### 2.1 I scanned the resolved dependency tree
+### 2.1 I checked the source checkout and tried the dependency scan
 
-I used SCA to compare the project's resolved packages with known vulnerability advisories. A vulnerable package is a useful lead, but its scanner severity alone does not tell me whether the affected code is included or reachable in the running application. After installing dependencies, I ran Snyk Open Source from the **WSL terminal**:
+With Juice Shop running on the target server and reachable through the SSH tunnel, I moved to the source checkout in **WSL**. SCA examines the packages a project depends on and compares their versions with known vulnerability advisories. It complements the live application test: here I was assessing the local source tree and its resolved packages, not sending requests to the running container.
+
+I first checked the project manifest and whether a lockfile was present. The checkout contained `package.json`, but no `package-lock.json`:
 
 ```bash
+# WSL workstation
+cd ~/project-2a/juice-shop-source
+ls -l package.json package-lock.json
+```
+
+I then tried Snyk Open Source. It stopped before scanning because the checkout did not yet have a `node_modules` directory:
+
+```bash
+# WSL workstation
+"$HOME/.local/bin/snyk" test
+```
+
+Snyk returned `SNYK-CLI-0000` with **“Missing node_modules folder: we can't test without dependencies. Please run 'npm install' first.”** This was a setup error, not a vulnerability result. The scan needed a locally resolved dependency tree before it could report package versions.
+
+### 2.2 I installed the project dependencies and reran Snyk
+
+I installed the dependencies in the WSL source checkout, then confirmed that npm had created `node_modules`:
+
+```bash
+# WSL workstation
+cd ~/project-2a/juice-shop-source
+npm install
+ls -ld node_modules
+```
+
+I reran Snyk and included development dependencies so the assessment also covered packages used by build and test tooling:
+
+```bash
+# WSL workstation
 "$HOME/.local/bin/snyk" test --dev
 ```
 
-The `--dev` option included development dependencies. This widened coverage to build and test packages, so I needed to retain each dependency path and later distinguish likely runtime packages from tooling. Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The full individual records are in [sca-individual-findings.md](sca-individual-findings.md); the corresponding SCA/SAST triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
+Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The output included an upgrade recommendation for `@cyclonedx/cyclonedx-npm@4.2.1`, along with findings across direct and transitive dependencies. I recorded the individual advisories and dependency paths in [sca-individual-findings.md](sca-individual-findings.md), retaining repeated advisories where Snyk reported different dependency paths. The corresponding SCA triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
 
-### 2.2 I treated dependency paths as part of the evidence
+### 2.3 I recorded what the scan did and did not establish
 
-Two Critical entries stood out for follow-up:
+Two Critical entries needed prompt owner review: arbitrary code injection associated with `marsdb@0.6.11`, which Snyk listed as directly introduced, and directory traversal in `decompress@4.2.1`, reached through `download@8.0.0`. The scan also reported High findings in legacy JWT packages, lodash, and other dependencies. Those package paths are evidence for triage; they do not by themselves prove that vulnerable code is reachable in the deployed service.
 
-- `marsdb@0.6.11`, reported with an arbitrary code injection advisory and shown as a direct introduced dependency.
-- `decompress@4.2.1`, reported with a directory traversal advisory through `download@8.0.0`.
+The checkout had no existing lockfile when I began. Installing dependencies gave Snyk a resolved local tree to inspect, but the result did not establish an exact match with the container image or a previously built release. Because this was an assessment and handoff lab, I recorded the upgrade advice for the development team and did not change the application's dependencies.
 
-The output also contained High findings in legacy JWT packages, lodash, and other transitive/build-related chains. I preserved the package, advisory, severity, and dependency path rather than collapsing different paths into one count. A developer or service owner would next establish whether each dependency is shipped, imported, reachable, and covered by a supported upgrade.
-
-**Problem and lesson:** The source checkout had no lockfile. Although `npm install` created a local dependency tree that Snyk could scan, this did not prove that the result exactly represented a previous build or the image running on the target. I recorded that limitation and kept dependency/runtime validation as a triage action instead of presenting the scan as an image SBOM.
-
-**Checkpoint:** SCA identified vulnerable package versions and dependency chains. It did not establish exploitability in the running app or complete remediation. Those require application/build context and a later rescan.
+**Checkpoint:** SCA identified known advisories in the locally resolved dependency tree and preserved their severities and paths. It did not demonstrate exploitability, establish runtime reachability, or verify a fix. With the dependency findings recorded, I moved on to the separate source-code scan in Section 3.
 
 ## 3. SAST — Static Application Security Testing
 
