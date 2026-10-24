@@ -95,7 +95,7 @@ Snyk authentication was configured for the lab account. I did not put authentica
 
 ### 1.4 I installed Docker on the target and checked its network state
 
-The Juice Shop application needed a container runtime on the **target node**. I reached that node through the admin node, installed Ubuntu's `docker.io` package, and checked the service before trying to load an image. The retained paste begins with `apt` output rather than the installation command itself, so the first block shows the repeatable terminal sequence and the second block records what `apt` reported:
+The Juice Shop application needed Docker on the **target node**. I reached the target through the admin node and installed `docker.io`. The pasted record contains the installation result but not the exact command that initiated it; these are the commands for that same step:
 
 ```bash
 # WSL workstation: connect to the admin node.
@@ -109,70 +109,19 @@ sudo apt update
 sudo apt install docker.io
 ```
 
-<details>
-<summary>Docker installation output preserved from the target</summary>
-
-```text
-Selecting previously unselected package bridge-utils.
-(Reading database… 98771 files and directories currently installed.)
-Preparing to unpack …/bridge-utils_1.7.1-4ubuntu3_amd64.deb…
-Unpacking bridge-utils (1.7.1-4ubuntu3)…
-Selecting previously unselected package containerd.
-Preparing to unpack …/containerd_2.2.2-0ubuntu1.2_amd64.deb…
-Unpacking containerd (2.2.2-0ubuntu1.2)…
-Selecting previously unselected package dnsmasq-base.
-Preparing to unpack …/dnsmasq-base_2.92-1ubuntu0.5_amd64.deb…
-Unpacking dnsmasq-base (2.92-1ubuntu0.5)…
-Selecting previously unselected package dns-root-data.
-Preparing to unpack …/dns-root-data_2025080400build1_all.deb…
-Unpacking dns-root-data (2025080400build1)…
-Selecting previously unselected package docker.io.
-Preparing to unpack …/docker.io_29.1.3-0ubuntu4.1_amd64.deb…
-Unpacking docker.io (29.1.3-0ubuntu4.1)…
-Selecting previously unselected package pigz.
-Preparing to unpack ./pigz_2.8-1build1_amd64.deb…
-Unpacking pigz (2.8-1build1)…
-Selecting previously unselected package runc.
-Preparing to unpack …/runc_1.4.0-0ubuntu1_amd64.deb…
-Unpacking runc (1.4.0-0ubuntu1)…
-Selecting previously unselected package ubuntu-fan.
-Preparing to unpack ./ubuntu-fan_0.12.17_all.deb…
-Unpacking ubuntu-fan (0.12.17)…
-Setting up bridge-utils (1.7.1-4ubuntu3)…
-Setting up dnsmasq-base (2.92-1ubuntu0.5)…
-Setting up dns-root-data (2025080400build1)…
-Setting up pigz (2.8-1build1)…
-Setting up runc (1.4.0-0ubuntu1)…
-Setting up ubuntu-fan (0.12.17)…
-Created symlink '/etc/systemd/system/multi-user.target.wants/ubuntu-fan.service' → '/usr/lib/systemd/system/ubuntu-fan.service'.
-Setting up containerd (2.2.2-0ubuntu1.2)…
-Created symlink '/etc/systemd/system/multi-user.target.wants/containerd.service' → '/usr/lib/systemd/system/containerd.service'.
-Setting up docker.io (29.1.3-0ubuntu4.1)…
-Created symlink '/etc/systemd/system/multi-user.target.wants/docker.service' → '/usr/lib/systemd/system/docker.service'.
-Created symlink '/etc/systemd/system/sockets.target.wants/docker.socket' → '/usr/lib/systemd/system/docker.socket'.
-Processing triggers for man-db (2.13.1-1build1)…
-Processing triggers for dbus (1.16.2-2ubuntu4)…
-Connection to 192.168.77.10 closed.
-Connection to 192.168.56.101 closed.
-```
-
-</details>
-
-The `docker.io`, `containerd`, and `runc` packages were installed, and `apt` created systemd service and socket links. I did not treat the links alone as proof that Docker was running. From **WSL**, I made the two-hop service check shown in the lab record:
+After installation, I checked the Docker service from **WSL** using the exact two-hop command recorded in the chat:
 
 ```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 \
-  'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
 ```
 
 It returned `active`. Docker can add a virtual bridge and routes, so I also checked the target's route table through the same path before loading Juice Shop:
 
 ```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 \
-  'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
 ```
 
-The pasted record does not include the route output, so I use the command to show the check without claiming a specific route change. Later, when HTTP requests timed out, I returned to the target's interface, Docker bridge, and forwarding rules in Section 4.1.
+I used that route check before loading the application image. Later, when HTTP requests timed out, I returned to the target's interface, Docker bridge, and forwarding rules in Section 4.1.
 
 **Checkpoint:** Node.js/npm and Snyk were ready in WSL, and Docker reported `active` on the target. I could scan the source and dependencies while preparing the containerized app for DAST.
 
@@ -270,9 +219,9 @@ I first tried to pull the image directly on the lab server, but Docker Hub name 
 sudo docker pull bkimminich/juice-shop:v20.3.0
 
 # WSL workstation
-# Replace these placeholders with the lab's assigned addresses.
-TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
-ADMIN_IP='<ADMIN_NODE_IP>'
+# Private addresses assigned to this lab.
+TARGET_IP='192.168.77.10'
+ADMIN_IP='192.168.56.101'
 ADMIN_USER='mdsadmin'
 
 # Pull into the WSL Docker context, then try to publish on the target address.
@@ -306,8 +255,8 @@ sudo docker ps -a --filter name=juice-shop
 I found that a container named `juice-shop` was already running. I tried to start another instance, but the name conflict prevented it from creating a new container:
 
 ```bash
-# Target Docker host; replace the placeholder with the target's private lab address.
-TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
+# Target Docker host; use its private lab address.
+TARGET_IP='192.168.77.10'
 sudo docker run -d --name juice-shop \
   -p "$TARGET_IP:3000:3000" \
   bkimminich/juice-shop:latest
@@ -338,11 +287,11 @@ I also checked the target from the **admin node**. I had mistakenly tried to run
 
 ```bash
 # WSL workstation: enter the admin node using the key stored in WSL.
-ADMIN_IP='<ADMIN_NODE_IP>'
+ADMIN_IP='192.168.56.101'
 ssh -i ~/.ssh/mds_admin_ed25519 "mdsadmin@$ADMIN_IP"
 
 # Admin node: request Juice Shop through the private lab network.
-TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
+TARGET_IP='192.168.77.10'
 curl -sS -o /dev/null -w 'Admin-to-target HTTP %{http_code}\n' \
   --max-time 5 "http://$TARGET_IP:3000/"
 ```
@@ -355,7 +304,7 @@ I checked why the original local test still returned HTTP `000` by looking for p
 # WSL workstation
 ss -ltnp 'sport = :3000'
 ss -ltnp 'sport = :3001'
-TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
+TARGET_IP='192.168.77.10'
 curl -sS -o /dev/null -w 'WSL-to-target HTTP %{http_code}\n' \
   --max-time 5 "http://$TARGET_IP:3000/"
 ```
@@ -364,8 +313,8 @@ The direct WSL-to-target request timed out, while the admin-to-target request ha
 
 ```bash
 # WSL workstation — this failed because local port 3000 was already occupied.
-TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
-ADMIN_IP='<ADMIN_NODE_IP>'
+TARGET_IP='192.168.77.10'
+ADMIN_IP='192.168.56.101'
 ADMIN_USER='mdsadmin'
 ssh -N -L 3000:"$TARGET_IP":3000 \
   -i ~/.ssh/mds_admin_ed25519 \
@@ -375,9 +324,9 @@ ssh -N -L 3000:"$TARGET_IP":3000 \
 I left the existing tunnel in the other terminal and tested it. It timed out at first. After checking the application inside its container and through the Docker bridge, I tested the existing port-3001 forward again. It returned HTTP 200. If I need to start that forward from scratch, this is the command I use in a dedicated **WSL terminal**; I leave it open and do not start a duplicate:
 
 ```bash
-# WSL workstation — replace the placeholders with this lab's addresses.
-TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
-ADMIN_IP='<ADMIN_NODE_IP>'
+# WSL workstation — these are the private addresses in this lab.
+TARGET_IP='192.168.77.10'
+ADMIN_IP='192.168.56.101'
 ADMIN_USER='mdsadmin'
 ssh -N -L 3001:"$TARGET_IP":3000 \
   -i ~/.ssh/mds_admin_ed25519 \
