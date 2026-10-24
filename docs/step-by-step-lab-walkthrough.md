@@ -397,8 +397,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 root = Path.home() / 'project-2a/zap-reports'
-spider = set(json.loads((root / 'spider-results.json').read_text())['results'])
-ajax = set(json.loads((root / 'ajax-spider-results.json').read_text())['results'])
+def urls(filename):
+    items = json.loads((root / filename).read_text()).get('results', [])
+    return {item if isinstance(item, str) else item.get('url')
+            for item in items} - {None}
+
+spider = urls('spider-results.json')
+ajax = urls('ajax-spider-results.json')
 for name, urls in [('traditional', spider), ('AJAX', ajax)]:
     print(name, 'URLs:', len(urls))
     print(name, '/api/ paths:', sum('/api/' in urlparse(url).path for url in urls))
