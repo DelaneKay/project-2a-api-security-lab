@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 13825)
-Total output lines: 946
-
 # My Project 2A SCA, SAST and DAST Scanning: Application and API Security Assessment Journey
 
 - **Core technologies:** Ubuntu in WSL, a hardened Ubuntu admin node, a hardened Ubuntu target node, Docker, OWASP Juice Shop, Snyk Open Source, Snyk Code, and OWASP ZAP.
@@ -324,6 +321,19 @@ The scan was black-box: ZAP evaluated externally visible behavior and did not in
 
 **Checkpoint:** DAST discovered reachable pages and response-level behaviors from the outside. The report distinguishes observed responses from source-confirmed issues and scanner signals that still need endpoint-specific validation.
 
+#### I prepared ZAP in WSL and checked the tunnel
+
+I chose OWASP ZAP for the DAST scan. Its baseline scan crawls the application and reports passive findings without actively attacking endpoints. I first checked whether the ZAP image was already available in WSL. It was not, so I pulled it. The Juice Shop SSH tunnel was open in another WSL terminal; before starting a scan, I checked that WSL could reach the application through that tunnel:
+
+```bash
+# WSL workstation
+docker image ls zaproxy/zap-stable
+docker pull zaproxy/zap-stable
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 http://localhost:3000/
+```
+
+The image pull completed successfully, and the reachability check returned `HTTP 200`. I then ran ZAP against `http://host.docker.internal:3000`, which was the address used by the scanner container to reach the tunneled service.
+
 #### Commands I ran and the report-permission problem I fixed
 
 The chat preserves the baseline commands and the failure output. My first scan attempt could not save ZAP's automation plan: ZAP ran as its container user, whose default home `/home/zap` was not writable. Running ZAP as my WSL user fixed access to the report folder but left the default home unwritable. I then tried mounting a separate `zap-home` directory beneath the report mount; ZAP still could not write `/zap/wrk/home/zap.yaml`. Those attempts did not produce the saved HTML report.
@@ -444,7 +454,78 @@ I started the traditional Spider, checked it until it reached 100%, and retrieve
 # WSL workstation
 curl -sS --get 'http://127.0.0.1:8090/JSON/spider/action/scan/' \
   --data-urlencode 'url=http://host.docker.internal:3000' \
-  --data-urlencod…825 tokens truncated…source folder was missing when I checked it, so I cloned the official `v20.3.0` release to match the application version. I checked Git first; it reported version `2.53.0`.
+  --data-urlencode 'recurse=true' \
+  --data-urlencode 'subtreeOnly=true'
+curl -sS --get 'http://127.0.0.1:8090/JSON/spider/view/status/' \
+  --data-urlencode 'scanId=0'
+curl -sS --get 'http://127.0.0.1:8090/JSON/spider/view/results/' \
+  --data-urlencode 'scanId=0' \
+  -o ~/project-2a/zap-reports/spider-results.json
+```
+
+The traditional crawl returned 94 URLs and no /api/ paths. My first AJAX request restricted the crawl to ZAP's existing scope. Juice Shop had not been added to scope, so this attempt did not crawl the site:
+
+```bash
+# WSL workstation
+curl -sS --get 'http://127.0.0.1:8090/JSON/ajaxSpider/action/scan/' \
+  --data-urlencode 'url=http://host.docker.internal:3000' \
+  --data-urlencode 'inScope=true' \
+  --data-urlencode 'subtreeOnly=true'
+curl -sS http://127.0.0.1:8090/JSON/ajaxSpider/view/status/
+docker logs --tail 80 zap-crawl-api
+```
+
+The log reported "The starting URI is not in scope". I retried with inScope=false; ZAP then returned Internal Error, so I inspected the logs rather than treating that attempt as a completed crawl:
+
+```bash
+# WSL workstation
+curl -sS --get 'http://127.0.0.1:8090/JSON/ajaxSpider/action/scan/' \
+  --data-urlencode 'url=http://host.docker.internal:3000' \
+  --data-urlencode 'inScope=false' \
+  --data-urlencode 'subtreeOnly=true'
+docker logs --tail 80 zap-crawl-api
+```
+
+After the successful AJAX crawl stopped, I saved the result list. The chat preserves these retrieval commands and the resulting 91-URL list, but not the exact successful scan-start parameters:
+
+```bash
+# WSL workstation
+curl -sS http://127.0.0.1:8090/JSON/ajaxSpider/view/status/
+curl -sS 'http://127.0.0.1:8090/JSON/ajaxSpider/view/results/' \
+  -o ~/project-2a/zap-reports/ajax-spider-results.json
+python3 -c 'import json; p="/home/devsecops/project-2a/zap-reports/ajax-spider-results.json"; r=json.load(open(p)).get("results", []); print(f"AJAX Spider URLs: {len(r)}"); print("\n".join(map(str, r[:20])))'
+```
+I counted URLs and checked which paths were new to the AJAX result. In the retained run, ten exact URL strings appeared in both lists and 81 strings appeared only in AJAX. Socket.IO query values made some URLs look unique even when they represented the same route. I treated that comparison as **discovery coverage**, then used the discovered API routes later in Section 5.
+
+```bash
+# WSL workstation
+python3 - <<'PY'
+import json
+from pathlib import Path
+from urllib.parse import urlparse
+
+root = Path.home() / 'project-2a/zap-reports'
+def urls(filename):
+    items = json.loads((root / filename).read_text()).get('results', [])
+    return {item if isinstance(item, str) else item.get('url')
+            for item in items} - {None}
+
+spider = urls('spider-results.json')
+ajax = urls('ajax-spider-results.json')
+for name, urls in [('traditional', spider), ('AJAX', ajax)]:
+    print(name, 'URLs:', len(urls))
+    print(name, '/api/ paths:', sum('/api/' in urlparse(url).path for url in urls))
+print('shared exact URLs:', len(spider & ajax))
+print('AJAX-only exact URLs:', len(ajax - spider))
+PY
+```
+
+
+## 3. SAST — Static Application Security Testing
+
+### 3.1 I cloned the matching Juice Shop source and prepared Snyk
+
+After I confirmed Juice Shop was running on the target, I prepared the source checkout in **WSL** for code analysis. The source folder was missing when I checked it, so I cloned the official `v20.3.0` release to match the application version. I checked Git first; it reported version `2.53.0`.
 
 ```bash
 # WSL workstation
