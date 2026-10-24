@@ -46,7 +46,7 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 ### 1.1 I checked the source checkout before running Snyk
 
-SCA and SAST need the correct project directory. I changed into the Juice Shop checkout and checked which files were present:
+In **WSL**, I checked that I was in the Juice Shop source checkout and that the project files needed for scanning were there:
 
 ```bash
 cd ~/project-2a/juice-shop-source
@@ -54,11 +54,11 @@ pwd
 ls -l package.json package-lock.json
 ```
 
-The checkout had `package.json`, but no `package-lock.json`. That mattered because dependency scans should use the dependency tree resolved for the project, and a lockfile makes the exact versions reproducible. The checkout also initially had no `node_modules` directory.
+The checkout had `package.json`, but no `package-lock.json` or `node_modules` folder. Without the lockfile, I could scan the dependencies installed locally, but I could not reproduce the exact dependency versions from a committed lockfile.
 
 ### 1.2 I fixed missing Node.js and npm in WSL
 
-My first version check failed with `node: command not found` and `npm: command not found`. I was in WSL, where the source checkout lived. The packages on the target server could not satisfy a missing tool in this shell. I ran the checks and installed Node.js and npm here:
+In WSL, my first version check returned `node: command not found` and `npm: command not found`. The source checkout was here, so I installed Node.js and npm in WSL:
 
 ```bash
 node --version
@@ -69,7 +69,7 @@ node --version
 npm --version
 ```
 
-I tried Snyk Test once before the project dependencies existed. It stopped with `Missing node_modules folder: We can't test without dependencies. Please run 'npm install' first.` I then installed the dependencies in the checkout and checked that the directory existed:
+My first Snyk test stopped because the checkout had no `node_modules` directory. I installed the project dependencies in WSL, then confirmed the directory had been created:
 
 ```bash
 cd ~/project-2a/juice-shop-source
@@ -78,11 +78,11 @@ npm install
 ls -ld node_modules
 ```
 
-That solved the missing-dependencies error. Because the checkout had no checked-in lockfile, the locally resolved tree was not a fully reproducible record of the original build. I kept that limit with the SCA findings.
+That gave Snyk a dependency tree to scan. Since the checkout had no lockfile, I recorded that these locally resolved versions might not exactly match the original build.
 
 ### 1.3 I checked Snyk CLI access
 
-The Snyk CLI was available in my WSL user's local binary directory. If I were preparing a fresh WSL account, I would install it under that account and add its bin directory to `PATH`; I would then authenticate interactively. I kept the CLI user-scoped instead of installing it system-wide:
+I installed the Snyk CLI in my WSL user directory, added it to `PATH`, checked the version, and authenticated:
 
 ```bash
 npm install --prefix "$HOME/.local" snyk
@@ -91,13 +91,13 @@ export PATH="$HOME/.local/bin:$PATH"
 "$HOME/.local/bin/snyk" auth
 ```
 
-Snyk authentication was configured for the lab account. I did not put authentication tokens or other credentials in commands or commit them to the repository.
+Snyk authenticated successfully for the lab account. The authentication token stayed out of the walkthrough.
 
 ### 1.4 I installed Docker on the isolated target before scanning
 
-The target VM did not have Docker, and its isolated network could not download packages directly. I used WSL to obtain the Ubuntu packages, moved them through the admin VM, and checked the files at each hop. This was the **first Docker installation** in the lab. The later Docker and Juice Shop troubleshooting was a separate event.
+Docker was not installed on the target, and its isolated network could not download the packages. I prepared the Ubuntu packages in WSL, transferred them through the admin node, and checked their checksums at each step. This was the first Docker installation; the later Docker failure happened separately in the lab.
 
-**I checked the target and planned the package set.** From WSL, I connected through the admin node and ran these commands on the **target server**:
+Before installing Docker, I checked free disk space, the Ubuntu release, the available Docker package version, and the packages APT planned to install. I ran these commands on the **target server**, reached from WSL through the admin node:
 
 ```bash
 df -h /
@@ -106,7 +106,7 @@ apt-cache policy docker.io
 apt-get -s install docker.io
 ```
 
-The target was Ubuntu 26.04.1 and showed `docker.io` candidate `29.1.3-0ubuntu4.1`. The simulation listed eight new packages and no removals. I refreshed WSL's package metadata and checked that it offered the same Docker version:
+I confirmed the target was Ubuntu 26.04.1. Its package index offered `docker.io` version `29.1.3-0ubuntu4.1`, and the simulation showed eight new packages with none removed. I refreshed WSL's package list and checked its candidate version too:
 
 ```bash
 # WSL workstation
@@ -115,9 +115,9 @@ apt-cache policy docker.io
 apt-get -s install docker.io
 ```
 
-WSL's simulation listed more dependencies because the two machines had different libraries installed. I used the target's package plan, not a broad copy of WSL's APT cache.
+WSL listed more packages in its simulation because WSL and the target already had different dependencies installed. I used the target's package plan to decide which files to transfer.
 
-**I downloaded and staged the eight packages in WSL.** APT initially cached `docker.io`, `containerd`, and `runc` but skipped several dependencies already installed in WSL. I explicitly downloaded those five package files, then copied only the eight required `.deb` files to a staging folder:
+APT downloaded `docker.io`, `containerd`, and `runc`, but skipped five dependencies that were already installed in WSL. I downloaded those package files separately, then staged the eight packages the target needed:
 
 ```bash
 # WSL workstation: download without installing Docker here.
@@ -134,51 +134,55 @@ sha256sum *.deb > SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
-The staged packages totalled about **71 MB**. I verified their checksums locally before transferring them.
-
-**I copied the packages from WSL to the admin node.** In one WSL session, I created the destination folder on the **admin node**:
+The eight packages totalled about **71 MB**. In WSL, I created a SHA-256 manifest and checked it before sending the files. I then made a staging folder on the **admin node**:
 
 ```bash
+# Admin node
 mkdir -p ~/project-2a/staging/docker-packages
 ```
 
-Then, from the **WSL workstation**, I copied the manifest and package files:
+From **WSL**, I copied the manifest and packages into that folder:
 
 ```bash
+# WSL workstation
 scp -i ~/.ssh/mds_admin_ed25519 SHA256SUMS *.deb mdsadmin@192.168.56.101:~/project-2a/staging/docker-packages/
 ```
 
-I checked the manifest on the **admin node**:
+On the **admin node**, I checked the transferred files against the manifest:
 
 ```bash
+# Admin node
 cd ~/project-2a/staging/docker-packages
 sha256sum -c SHA256SUMS
 ```
 
-All eight package files reported `OK`.
+All eight package files reported `OK` on the admin node.
 
-**I copied the packages from the admin node to the target server.** I created the destination folder on the **target server**:
+Next, I created the same staging folder on the **target server**:
 
 ```bash
+# Target server
 mkdir -p ~/project-2a/staging/docker-packages
 ```
 
-Then, from the **admin node**, I used its target SSH key to transfer the files:
+From the **admin node**, I used its SSH key for the target to copy the package files across:
 
 ```bash
+# Admin node
 scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/docker-packages/* mdsadmin@192.168.77.10:~/project-2a/staging/docker-packages/
 ```
 
-I checked the same manifest on the **target server**:
+On the **target server**, I checked the manifest again:
 
 ```bash
+# Target server
 cd ~/project-2a/staging/docker-packages
 sha256sum -c SHA256SUMS
 ```
 
-Again, all eight packages reported `OK`. This confirmed that the files arrived unchanged before installation.
+All eight packages reported `OK` on the target too, confirming that the transfer had not changed them.
 
-**APT could plan the install but could not complete it offline.** On the **target server**, my first simulation using `--no-download` failed with `Unable to fetch some archives`; it made no changes. A second simulation using the staged local paths showed the intended eight-package plan. The install attempt still tried to fetch archives and failed:
+The first offline APT attempt hit a problem. On the **target server**, the `--no-download` simulation failed with `Unable to fetch some archives` and made no changes. A simulation using the local package paths showed the eight-package plan, but the real APT install still tried to fetch archives and failed. I kept all three target-side commands here to show what I tried and where it stopped:
 
 ```bash
 # Target server: failed simulation at archive lookup.
@@ -192,29 +196,29 @@ apt-get -s install ./*.deb
 sudo apt-get --no-download install ./*.deb
 ```
 
-I switched to `dpkg` to install the package files already on the **target server**:
+Since the package files were already on the **target server**, I used `dpkg` to install them locally:
 
 ```bash
 cd ~/project-2a/staging/docker-packages
 sudo dpkg -i ./*.deb
 ```
 
-The output showed `bridge-utils`, `containerd`, `runc`, `docker.io`, and the other staged packages unpacked and configured. Systemd links were created for the Docker service and socket.
+The installation completed: the output showed the Docker packages unpacked and configured, and systemd links created for the Docker service and socket.
 
-**I verified Docker and the network on the target server.** These checks ran on the **target server** after installation:
+After the install, I checked Docker and the network from the **target server**:
 
 ```bash
 systemctl is-active docker
 ip route
 ```
 
-The service returned `active`. The route table showed Docker's `172.17.0.0/16` bridge and the original `192.168.77.0/24` lab route, with no default route. This confirmed Docker had started without giving the isolated target an internet path.
+The Docker service check returned `active`. The route table showed the new `172.17.0.0/16` bridge alongside the lab route `192.168.77.0/24`, with no default route. The target still had no direct internet route.
 
 ### 1.5 I transferred, verified, and started the first Juice Shop container
 
-The target still had no default route, so I used the `bkimminich/juice-shop:latest` image already cached in WSL. I saved it as an archive for transfer. The WSL image ID was `sha256:2d370ec1…` and its repository digest had been recorded before this transfer.
+The target had no internet route, so I used the `bkimminich/juice-shop:latest` image already stored in WSL. I saved it to an archive for transfer. Before this, WSL reported image ID `sha256:2d370ec1…` and a repository digest for the image.
 
-**I saved the image and made an archive checksum in WSL.**
+I saved the image and created a checksum file in **WSL**:
 
 ```bash
 docker save --output ~/project-2a/staging/juice-shop.tar bkimminich/juice-shop:latest
@@ -223,41 +227,41 @@ sha256sum juice-shop.tar > juice-shop.tar.sha256
 ls -lh juice-shop.tar juice-shop.tar.sha256
 ```
 
-The archive was about **347 MB**. I copied both files from **WSL to the admin node**:
+The archive was about **347 MB**. I copied the archive and its checksum file from **WSL to the admin node**:
 
 ```bash
 scp -i ~/.ssh/mds_admin_ed25519 juice-shop.tar juice-shop.tar.sha256 mdsadmin@192.168.56.101:~/project-2a/staging/
 ```
 
-On the **admin node**, I verified the archive checksum:
+On the **admin node**, I checked the archive against its manifest:
 
 ```bash
 cd ~/project-2a/staging
 sha256sum -c juice-shop.tar.sha256
 ```
 
-It returned `juice-shop.tar: OK`. From the **admin node**, I copied the archive and manifest to the target server:
+The check returned `juice-shop.tar: OK`. From the **admin node**, I copied the verified archive and checksum file to the target:
 
 ```bash
 scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/juice-shop.tar ~/project-2a/staging/juice-shop.tar.sha256 mdsadmin@192.168.77.10:~/project-2a/staging/
 ```
 
-On the **target server**, I checked the checksum again:
+On the **target server**, I ran the same checksum check:
 
 ```bash
 cd ~/project-2a/staging
 sha256sum -c juice-shop.tar.sha256
 ```
 
-It also returned `juice-shop.tar: OK`. I loaded the verified archive into Docker on the **target server**:
+The target also returned `juice-shop.tar: OK`. I loaded the verified image archive into Docker on the **target server**:
 
 ```bash
 sudo docker load --input ~/project-2a/staging/juice-shop.tar
 ```
 
-Docker reported `Loaded image: bkimminich/juice-shop:latest`. Loading the image did not start the application.
+Docker reported `Loaded image: bkimminich/juice-shop:latest`. I had loaded the image, but had not started the application yet.
 
-**I investigated an image ID mismatch before running it.** My first attempt to inspect the image on the **target server** through non-interactive SSH failed because `sudo` required a terminal. I retried from WSL with a terminal allocated at both SSH hops. The target-side command was:
+Before starting Juice Shop, I checked the image on the **target server**. My first attempt from WSL failed because `sudo` needed a terminal. The target-side command was the same on retry; I allocated a terminal at both SSH hops so the password prompt could work:
 
 ```bash
 # Target server: the first, non-interactive attempt failed at sudo authentication.
@@ -267,9 +271,9 @@ sudo docker image inspect --format '{{.Id}}' bkimminich/juice-shop:latest
 sudo docker image inspect --format '{{.Id}}' bkimminich/juice-shop:latest
 ```
 
-The target reported image ID `sha256:9a55bcd1…`; WSL reported `sha256:2d370ec1…`. I paused and compared the archive manifest, config hash, and image layers instead of assuming the copy was bad.
+The image IDs did not match: the target reported `sha256:9a55bcd1…`, while WSL reported `sha256:2d370ec1…`. I paused to compare the archive manifest, config hash, and image layers before starting the container.
 
-On **WSL**, I inspected the archive manifest and confirmed its config blob hashed to the WSL image ID. I also corrected a layer-inspection command after an unquoted format expression caused an error and produced a meaningless hash:
+On **WSL**, I checked the archive manifest and hashed its config blob. The blob matched the WSL image ID. I also fixed a layer-inspection command: I had left its format expression unquoted, so the first result was an error hash rather than a useful layer fingerprint.
 
 ```bash
 # WSL workstation
@@ -282,7 +286,7 @@ docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDig
 docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-shop:latest | sha256sum
 ```
 
-On the **target server**, I checked the full image ID, compared its layer-list fingerprint, and confirmed the image platform:
+I ran these checks on the **target server** to compare the full image ID, layer list, and platform:
 
 ```bash
 sudo docker image ls --no-trunc bkimminich/juice-shop:latest
@@ -290,30 +294,30 @@ sudo docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-sh
 sudo docker image inspect --format 'OS={{.Os}} ARCH={{.Architecture}} SIZE={{.Size}}' bkimminich/juice-shop:latest
 ```
 
-The config blob hashed to `2d370ec1…`; both layer-list checks returned `36fd80fb…`; and the target reported `OS=linux ARCH=amd64`. The image IDs differed between Docker stores, but the archive checksums and matching layer lists supported using the transferred image in this isolated lab.
+The config blob hashed to `2d370ec1…`. Both layer-list checks returned `36fd80fb…`, and the target reported `OS=linux ARCH=amd64`. The image IDs were different in the two Docker stores, but the archive checksum and matching layer lists gave me enough evidence to continue with the lab image.
 
-**I started Juice Shop on the target server's private interface.** At the **target server** shell, I ran the container and checked its status:
+Once the image checks were complete, I started Juice Shop on the **target server**, bound it to the private lab address, and checked that it was running:
 
 ```bash
 sudo docker run -d --name juice-shop --restart unless-stopped -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest
 sudo docker ps --filter name=juice-shop
 ```
 
-The run returned container ID `5440dc6a…`. `docker ps` showed it **Up** with `192.168.77.10:3000->3000/tcp`.
+Docker returned container ID `5440dc6a…`. The **target server** showed the container as **Up**, with port 3000 bound to `192.168.77.10`.
 
-**I checked the app from the admin node.** This HTTP request ran on the **admin node** and returned `HTTP 200`:
+I checked the application from the **admin node** with this request; it returned `HTTP 200`:
 
 ```bash
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 http://192.168.77.10:3000/
 ```
 
-Windows could not open the isolated `192.168.77.10` address directly, so I started an SSH tunnel in **WSL** and left that terminal running:
+Windows could not reach the target's isolated address directly. I opened an SSH tunnel from **WSL** through the admin node and left that terminal running:
 
 ```bash
 ssh -N -L 3000:192.168.77.10:3000 -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
 ```
 
-The browser then opened Juice Shop at `http://localhost:3000`. That was the working application checkpoint before I continued with the source and security scans. The later Docker outage and repeat image troubleshooting happened in a separate stage of this lab.
+The browser opened Juice Shop at `http://localhost:3000`. At that point, the app was running on the target and reachable through the WSL tunnel. I then continued with the scans. The Docker outage and repeat image setup occurred later in the lab.
 
 ## 2. SCA — Software Composition Analysis
 
