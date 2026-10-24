@@ -1,4 +1,4 @@
-# My Project 2A SCA, SAST and DAST Scanning application and API security assessment journey
+# My Project 2A SCA, SAST and DAST Scanning: Application and API Security Assessment Journey
 
 - **Core technologies:** Ubuntu in WSL, a hardened Ubuntu admin node, a hardened Ubuntu target node, Docker, OWASP Juice Shop, Snyk Open Source, Snyk Code, and OWASP ZAP.
 - **Problem addressed:** I needed to assess an intentionally vulnerable web application across its dependencies, source code, web behavior, and API authorization, then record findings for the teams responsible for remediation.
