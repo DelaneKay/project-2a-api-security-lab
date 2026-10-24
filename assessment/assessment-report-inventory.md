@@ -4,6 +4,8 @@
 **Target:** OWASP Juice Shop v20.3.0, intentionally vulnerable training application  
 **Purpose:** Record assessment evidence and classify findings. This is not a claim of production security or compliance.
 
+The technical first-pass triage and prioritization is in [triage-review.md](triage-review.md); it distinguishes confirmed lab behavior, source findings, likely test/build-only records, and items requiring service-owner context.
+
 ## Scope and evidence sources
 
 This inventory consolidates the evidence currently preserved in `zap-baseline-report.md`. The work covered SCA (Snyk Open Source), SAST (Snyk Code), passive and API scanning (OWASP ZAP), plus read-only manual API checks. Findings in the training application's deliberate challenge code are reported as assessment results, not treated as defects in a production service.
