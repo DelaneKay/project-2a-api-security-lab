@@ -33,12 +33,13 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 | Stage | Sequence |
 | --- | --- |
-| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm and Snyk → install dependencies → install Docker on the target and check its service and routes. |
+| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm and Snyk → install dependencies. |
 | [2. SCA](#2-sca--software-composition-analysis) | Scan dependencies → interpret advisory/path output → preserve individual findings. |
 | [3. SAST](#3-sast--static-application-security-testing) | Scan source → separate application code from tests/challenge examples → record findings. |
-| [4. DAST](#4-dast--dynamic-application-security-testing) | Restore target reachability → baseline crawl → AJAX Spider → interpret scan limits. |
-| [5. API Security](#5-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
-| [6. Assessment handoff](#6-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
+| [4. Prepare the target with Docker](#4-prepare-the-target-with-docker) | Install Docker → verify the service → check the target routes, stopping before the Juice Shop image step. |
+| [5. DAST](#5-dast--dynamic-application-security-testing) | Baseline crawl → AJAX Spider → interpret scan limits. |
+| [6. API Security](#6-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
+| [7. Assessment handoff](#7-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
 
 **Starting point:** The servers had been hardened in Project 1A Linux Server Hardening and the Juice Shop source checkout was available in WSL. I used the lab accounts and SSH access already established for this environment. I did not include private key material or account passwords in this repository.
 
@@ -92,192 +93,6 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Snyk authentication was configured for the lab account. I did not put authentication tokens or other credentials in commands or commit them to the repository.
-
-### 1.4 I installed Docker on the target before deploying Juice Shop
-
-The target was the Docker host, so I connected from **WSL** to the **admin node**, then from the admin node to the **target node**. These were separate shells; I could not assume a key stored in WSL was available on the servers. The pasted record retained the installation output, but not the command that started it. These are the installation steps and the exact SSH, service, and route checks I retained:
-
-```bash
-# WSL workstation: connect to the admin node.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
-
-# Admin node: connect to the target node.
-ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
-
-# Target node: refresh package metadata and install Docker.
-sudo apt update
-sudo apt install docker.io
-```
-
-The installation took longer than expected and appeared frozen. The SSH connections then closed, but the terminal output showed `containerd`, `runc`, and `docker.io` being set up and systemd links created for the Docker service and socket. A closed SSH session did not tell me whether installation succeeded, so I verified the service from **WSL** with the exact two-hop command recorded in the chat:
-
-```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
-```
-
-It returned `active`. Docker adds a virtual bridge and may change routes, so I checked the target's route table through the same two-hop path before loading the application image:
-
-```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
-```
-
-This is where the Docker installation stage ended. The next step was to get the Juice Shop image onto the target, which begins in Section 1.5.
-
-### 1.5 I loaded and checked Juice Shop on the target
-
-After Docker reported `active`, I worked through getting the Juice Shop image onto the target. The commands below are the setup and troubleshooting I performed before the DAST section. I kept the WSL, admin, and target shells distinct because they have different Docker contexts and SSH keys.
-
-I tried to pull the image directly on the lab server, but Docker Hub name resolution failed there. I then pulled the image into WSL. Starting it from WSL with the target server's private address also failed because Docker could not publish that remote address from the WSL Docker context. These are the pull and run commands I used while diagnosing that:
-
-```bash
-# Target node — this pull failed because Docker Hub DNS resolution failed.
-sudo docker pull bkimminich/juice-shop:v20.3.0
-
-# WSL workstation: pull into the local Docker context.
-docker pull bkimminich/juice-shop:v20.3.0
-
-# This run failed: WSL could not publish the target node's address.
-sudo docker run -d --name juice-shop -p 192.168.77.10:3000:3000 bkimminich/juice-shop:v20.3.0
-
-# After pulling the image into WSL, save it to a tar file for transfer.
-docker save -o ~/project-2a/juice-shop-v20.3.0.tar bkimminich/juice-shop:v20.3.0
-scp -i ~/.ssh/mds_admin_ed25519 ~/project-2a/juice-shop-v20.3.0.tar mdsadmin@192.168.56.101:/tmp/juice-shop-v20.3.0.tar
-```
-
-An initial load attempt on the **admin node** returned `docker: command not found` in that shell, so I could not confirm that the transferred tar was loaded there. The command I attempted was:
-
-```bash
-# Admin node
-sudo docker load -i /tmp/juice-shop-v20.3.0.tar
-```
-
-The different results were confusing because `docker ps` and `docker images` depend on which Docker daemon I am connected to. An empty result from WSL only meant there was no matching container in WSL's Docker context; it did not say what was running on the lab server. In a later server session, I checked the server's daemon directly:
-
-```bash
-# Target Docker host
-sudo docker images bkimminich/juice-shop
-sudo docker ps -a --filter name=juice-shop
-```
-
-I found that a container named `juice-shop` was already running. I tried to start another instance, but the name conflict prevented it from creating a new container:
-
-```bash
-# Target Docker host; this failed because the name was already in use.
-sudo docker run -d --name juice-shop -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest
-```
-
-On the **target node**, I checked the private interface, running container, image tag, and published port:
-
-```bash
-ip -br -4 addr
-sudo docker ps -a --filter name=juice-shop
-sudo docker inspect juice-shop --format 'Image={{.Config.Image}} State={{.State.Status}} PortBindings={{json .HostConfig.PortBindings}}'
-```
-
-The binding kept the published port on the lab interface. Docker's separate network namespace isolated the application process from the host environment, while the earlier Linux hardening still protected host access. I also checked the host's firewall and Docker forwarding rules on the **target node**:
-
-```bash
-sudo ufw status verbose
-sudo iptables -t nat -S DOCKER
-sudo iptables -t nat -L DOCKER -n -v
-sudo iptables -S FORWARD
-sudo iptables -S DOCKER
-sudo iptables -L DOCKER -n -v
-sudo iptables -L DOCKER-USER -n -v
-sudo iptables -L DOCKER-FORWARD -n -v
-```
-
-UFW was inactive, and Docker had DNAT and forwarding rules for TCP 3000. The packet counters showed traffic reaching Docker's port-forwarding rules. I used those outputs to trace the route, then relied on an HTTP request from WSL as the end-to-end check.
-
-I checked the existing container instead of assuming the image transfer had replaced it:
-
-```bash
-# Target node
-sudo docker ps -a --filter name=juice-shop
-sudo docker inspect juice-shop --format 'Image={{.Config.Image}} State={{.State.Status}} PortBindings={{json .HostConfig.PortBindings}}'
-sudo docker logs --tail 80 juice-shop
-```
-
-That showed the existing `juice-shop` container was up from `bkimminich/juice-shop:latest` with TCP 3000 mapped to the target's private interface. The logs showed application requests, including `Unexpected path` messages; those log entries did not explain the WSL timeout. A container-local request and a Docker-bridge request both returned HTTP 200, so I narrowed the remaining failure to the client-to-target path. This Node-based command is a repeatable way to check the HTTP listener inside the Node.js application container:
-
-```bash
-# Target node: check the app in its own network namespace
-sudo docker exec juice-shop node -e "require('http').get('http://127.0.0.1:3000/', r => { console.log('HTTP', r.statusCode); r.resume() }).on('error', e => { console.error(e.message); process.exit(1) })"
-
-# Target node: discover the container address and check through the Docker bridge
-CONTAINER_IP="$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' juice-shop)"
-curl -sS -o /dev/null -w 'Container-bridge HTTP %{http_code}\n' \
-  --max-time 5 "http://$CONTAINER_IP:3000/"
-```
-
-I also checked the target from the **admin node**. I had mistakenly tried to run my WSL SSH command again after I was already logged in as `mdsadmin`; that shell did not have my WSL private key and the SSH attempt returned `Permission denied (publickey)`. The useful test from inside the admin node was the direct HTTP request to the target's private interface:
-
-```bash
-# WSL workstation: enter the admin node using the key stored in WSL.
-ADMIN_IP='192.168.56.101'
-ssh -i ~/.ssh/mds_admin_ed25519 "mdsadmin@$ADMIN_IP"
-
-# Admin node: request Juice Shop through the private lab network.
-TARGET_IP='192.168.77.10'
-curl -sS -o /dev/null -w 'Admin-to-target HTTP %{http_code}\n' \
-  --max-time 5 "http://$TARGET_IP:3000/"
-```
-
-The admin-to-target request returned HTTP 200. This separated a working target and lab network from the unreliable WSL forwarding path.
-
-I checked why the original local test still returned HTTP `000` by looking for processes using ports 3000 and 3001:
-
-```bash
-# WSL workstation
-ss -ltnp 'sport = :3000'
-ss -ltnp 'sport = :3001'
-TARGET_IP='192.168.77.10'
-curl -sS -o /dev/null -w 'WSL-to-target HTTP %{http_code}\n' \
-  --max-time 5 "http://$TARGET_IP:3000/"
-```
-
-The direct WSL-to-target request timed out, while the admin-to-target request had returned HTTP 200. Port 3000 was already held by an SSH process, and a tunnel was also already listening on 3001 in another terminal. Trying to start a second tunnel on either port only produced “Address already in use.” This is the port-3000 command that failed:
-
-```bash
-# WSL workstation — this failed because local port 3000 was already occupied.
-TARGET_IP='192.168.77.10'
-ADMIN_IP='192.168.56.101'
-ADMIN_USER='mdsadmin'
-ssh -N -L 3000:"$TARGET_IP":3000 \
-  -i ~/.ssh/mds_admin_ed25519 \
-  "$ADMIN_USER@$ADMIN_IP"
-```
-
-I left the existing tunnel in the other terminal and tested it. It timed out at first. After checking the application inside its container and through the Docker bridge, I tested the existing port-3001 forward again. It returned HTTP 200. If I need to start that forward from scratch, this is the command I use in a dedicated **WSL terminal**; I leave it open and do not start a duplicate:
-
-```bash
-# WSL workstation — these are the private addresses in this lab.
-TARGET_IP='192.168.77.10'
-ADMIN_IP='192.168.56.101'
-ADMIN_USER='mdsadmin'
-ssh -N -L 3001:"$TARGET_IP":3000 \
-  -i ~/.ssh/mds_admin_ed25519 \
-  "$ADMIN_USER@$ADMIN_IP"
-```
-
-In a second WSL terminal, I confirmed that the tunnel reached the app:
-
-```bash
-# First, this request through the old port-3000 forward timed out.
-curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 \
-  http://localhost:3000/
-curl -v --max-time 5 http://localhost:3000/ -o /dev/null
-
-# I then checked the existing port-3001 forward.
-ss -ltnp 'sport = :3001'
-curl -sS -o /dev/null -w 'HTTP %{http_code}\n' \
-  --max-time 10 http://localhost:3001/
-```
-
-The curl returned HTTP 200. The `ss` listener check by itself was not enough; only the HTTP response confirmed end-to-end reachability. The HTTP `000` and timeout results were network-path failures, not findings.
-
-That HTTP 200 was the reachability checkpoint before I moved to the scan results.
-
 
 ## 2. SCA — Software Composition Analysis
 
@@ -335,11 +150,43 @@ The source review found that `routes/search.ts` builds a SQL expression using th
 
 **Checkpoint:** SAST supplied code locations and risky patterns for developer review because this was a white-box scan with source access. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
 
-## 4. DAST — Dynamic Application Security Testing
+## 4. Prepare the target with Docker
 
-### 4.1 I ran ZAP baseline and AJAX Spider scans
+### 4.1 I completed the first Docker installation on the target
 
-I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which is why I traced the network path in Section 1.5 and used port 3001 for the later API scan. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
+The target was the Docker host, so I connected from **WSL** to the **admin node**, then from the admin node to the **target node**. These were separate shells; I could not assume a key stored in WSL was available on the servers. The pasted record retained the installation output, but not the command that started it. These are the installation steps and the exact SSH, service, and route checks I retained:
+
+```bash
+# WSL workstation: connect to the admin node.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
+
+# Admin node: connect to the target node.
+ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
+
+# Target node: refresh package metadata and install Docker.
+sudo apt update
+sudo apt install docker.io
+```
+
+The installation took longer than expected and appeared frozen. The SSH connections then closed, but the terminal output showed `containerd`, `runc`, and `docker.io` being set up and systemd links created for the Docker service and socket. A closed SSH session did not tell me whether installation succeeded, so I verified the service from **WSL** with the exact two-hop command recorded in the chat:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
+```
+
+It returned `active`. Docker adds a virtual bridge and may change routes, so I checked the target's route table through the same two-hop path before loading the application image:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
+```
+
+This is where the Docker installation stage ended. I stopped this stage before the first Juice Shop image command.
+
+## 5. DAST — Dynamic Application Security Testing
+
+### 5.1 I ran ZAP baseline and AJAX Spider scans
+
+I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which I investigated later before the API scan continued on port 3001. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
 The AJAX-enabled baseline discovered **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** in its separate run. A direct Spider API crawl found 94 traditional Spider URLs and 91 AJAX Spider URLs. The AJAX crawl exposed API routes and client-loaded resources that the traditional crawl missed. These counts came from different runs/settings; I recorded them as crawl coverage rather than comparing them as vulnerability counts.
 
@@ -463,11 +310,11 @@ PY
 ```
 
 
-## 5. API Security
+## 6. API Security
 
 I used two methods to assess API security. ZAP API Scan discovered routes and sent generated requests across the imported API surface. I then used two lab accounts to answer questions the unauthenticated scan could not answer: could one user read another user's basket, and would the application accept an unsigned token? I kept those checks read-only.
 
-### 5.1 I ran the ZAP API Scan and established the API surface
+### 6.1 I ran the ZAP API Scan and established the API surface
 
 The AJAX Spider and API Scan surfaced routes including challenge and quantity endpoints, product search, languages, application version/configuration, and user-related routes. The API Scan imported 16 URLs and reported 53 total URLs, 108 PASS checks, 0 FAIL, and 7 warning types. Its report listed 37 endpoints, all using GET, and noted slow responses. It was unauthenticated and covered only the imported API surface plus scanner-generated requests.
 
@@ -586,7 +433,7 @@ curl -sS -i --max-time 10 --get --data-urlencode "q='" \
 
 For example, the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. This was recorded as a potential business-data exposure for an owner to assess, because the evidence did not define whether the lab intended those values to be public. The anonymous `/api/Users` request returned `401`, which was positive evidence that anonymous access was denied on that route.
 
-### 5.2 I tested cross-account basket authorization
+### 6.2 I tested cross-account basket authorization
 
 The automated API scan was unauthenticated, so it could not establish cross-account object authorization. Before sending a live request, I examined the basket route and its tests in the source checkout. The saved source output showed `GET /rest/basket/:id`, a basket lookup by the requested ID, and tests for cross-user access and forged JWTs. I use these commands to revisit those lines from the **WSL terminal**; the exact original source-search command was not retained:
 
@@ -675,7 +522,7 @@ Account B reading Account A's basket: HTTP 200; returned basket ID=6
 
 I did not print bearer tokens or basket contents. This manual result answered an access-control question that the unauthenticated ZAP run did not cover.
 
-### 5.3 I checked whether an unsigned JWT was accepted
+### 6.3 I checked whether an unsigned JWT was accepted
 
 I used a test account and sent a read-only basket request with an unsigned JWT (`alg: none`). The service returned HTTP 200 and a basket ID. This confirmed that the lab accepted an unsigned token for that protected read, recorded as **API-02** and linked to GitHub Issue #2. The broader consequences, such as using the token to impersonate other users or perform writes, were not tested.
 
@@ -718,7 +565,7 @@ The preserved terminal result was `Unsigned-token request: HTTP 200; returned ba
 
 **Safety and evidence note:** The purpose was to demonstrate authentication validation in the training app. I did not test real accounts or a production service, and I did not use the test to modify basket state.
 
-### 5.4 I combined manual and tool results without treating them as duplicates
+### 6.4 I combined manual and tool results without treating them as duplicates
 
 I kept the source of each result clear. My two-account BOLA and unsigned-JWT checks were manual; ZAP's unauthenticated API scan did not reproduce them. ZAP raised the product-search SQL alert, and I used source review to confirm unsafe query construction. For CORS and configuration behavior, I compared ZAP's repeated observations with my manual response checks rather than counting the same behavior twice.
 
@@ -732,15 +579,15 @@ The API appendix and consolidated assessment distinguish:
 - **API-06:** malformed-request server errors observed by ZAP; no sensitive response body confirmed.
 - **API-07/API-08:** content-type and CSP observations recorded as lower-confidence or lower-impact follow-up items.
 
-## 6. Assessment handoff
+## 7. Assessment handoff
 
-### 6.1 I wrote findings for the teams who own remediation
+### 7.1 I wrote findings for the teams who own remediation
 
 My role in this lab was assessment and risk communication. The developers own source changes. The service owner supplies business context, assigns an accountable team, sets target dates, and decides whether any residual risk is accepted. DevSecOps makes the work actionable by preserving evidence, deduplicating results, explaining confidence, connecting findings to risk, and defining how a fix should be verified.
 
 The repository contains the consolidated assessment report, SCA/SAST/DAST/API appendices, risk register, detailed SCA/SAST CSV, and first-pass triage. Six API remediation issues were created in GitHub Issues #1–#6. They link back to evidence and provide proposed acceptance and verification expectations. An issue is a handoff; it is not proof that a developer has fixed the problem.
 
-### 6.2 I kept remediation and verification as future work
+### 7.2 I kept remediation and verification as future work
 
 This lab stage stops after documenting and assigning follow-up. No Juice Shop source fixes were made. In a real delivery pipeline, the development team would implement changes, and DevSecOps would help define focused regression tests, rerun the relevant scanner or manual check against the fixed build, capture the result, and update the assessment and risk register. A service owner would close or accept the risk based on evidence and business context.
 
