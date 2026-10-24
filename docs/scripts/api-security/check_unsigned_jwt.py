@@ -34,7 +34,11 @@ try:
     response = urllib.request.urlopen(request, timeout=10)
 except urllib.error.HTTPError as error:
     response = error
-result = json.loads(response.read())
+raw = response.read()
+try:
+    result = json.loads(raw)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    result = {}
 returned_id = result.get("data", {}).get("id")
 print(f"Unsigned-token request: HTTP {response.status}; returned basket ID={returned_id}")
 if response.status == 200 and str(returned_id) == "6":
