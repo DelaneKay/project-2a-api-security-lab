@@ -93,9 +93,9 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Snyk authentication was configured for the lab account. I did not put authentication tokens or other credentials in commands or commit them to the repository.
 
-### 1.4 I installed Docker on the target and checked its network state
+### 1.4 I installed Docker on the target before deploying Juice Shop
 
-The Juice Shop application needed Docker on the **target node**. I reached the target through the admin node and installed `docker.io`. The pasted record contains the installation result but not the exact command that initiated it; these are the commands for that same step:
+The target was the Docker host, so I connected from **WSL** to the **admin node**, then from the admin node to the **target node**. These were separate shells; I could not assume a key stored in WSL was available on the servers. The pasted record retained the installation output, but not the command that started it. These are the installation steps and the exact SSH, service, and route checks I retained:
 
 ```bash
 # WSL workstation: connect to the admin node.
@@ -104,24 +104,24 @@ ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
 # Admin node: connect to the target node.
 ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
 
-# Target node: install the Docker package.
+# Target node: refresh package metadata and install Docker.
 sudo apt update
 sudo apt install docker.io
 ```
 
-After installation, I checked the Docker service from **WSL** using the exact two-hop command recorded in the chat:
+The installation took longer than expected and appeared frozen. The SSH connections then closed, but the terminal output showed `containerd`, `runc`, and `docker.io` being set up and systemd links created for the Docker service and socket. A closed SSH session did not tell me whether installation succeeded, so I verified the service from **WSL** with the exact two-hop command recorded in the chat:
 
 ```bash
 ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
 ```
 
-It returned `active`. Docker can add a virtual bridge and routes, so I also checked the target's route table through the same path before loading Juice Shop:
+It returned `active`. Docker adds a virtual bridge and may change routes, so I checked the target's route table through the same two-hop path before loading the application image:
 
 ```bash
 ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
 ```
 
-I used that route check before loading the application image. The image and network commands follow in Section 1.5.
+This is where the Docker installation stage ended. The next step was to get the Juice Shop image onto the target, which begins in Section 1.5.
 
 ### 1.5 I loaded and checked Juice Shop on the target
 
