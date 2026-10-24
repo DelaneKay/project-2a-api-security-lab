@@ -521,6 +521,111 @@ PY
 ```
 
 
+### 2.3 I manually reviewed the API routes found by the AJAX Spider
+
+The AJAX Spider found API routes the traditional Spider missed, including `/api/Challenges/` and several `/rest/` endpoints. The saved URL lists contained **91 AJAX URLs, 94 traditional URLs, 10 exact matches, and 81 AJAX-only URL strings**. Some AJAX-only strings differed only by changing Socket.IO query values, so the count does not represent 81 distinct routes. I used this discovery comparison to choose a few read-only API requests for an initial review. These checks happened after the ZAP crawl and before I cloned the source for SAST.
+
+I began with an unauthenticated `GET` to the application-configuration endpoint. The response was `200 OK`, so I inspected the JSON field names before deciding whether anything sensitive was exposed:
+
+```bash
+# WSL workstation
+curl -sS -D - --max-time 10 -o /dev/null http://localhost:3000/rest/admin/application-configuration
+```
+
+I recorded the `200 OK` as an observation, not a confirmed vulnerability. This Python check printed only the top-level property names and names that matched common secret-related terms; it did not print configuration values:
+
+```bash
+# WSL workstation
+python3 - <<'PY'
+import json
+import re
+import urllib.request
+
+url = "http://localhost:3000/rest/admin/application-configuration"
+with urllib.request.urlopen(url, timeout=10) as response:
+    data = json.load(response)
+
+print("Top-level properties:")
+for key in sorted(data) if isinstance(data, dict) else []:
+    print(" ", key)
+
+sensitive_name = re.compile(r"secret|password|token|private|credential|api.?key", re.I)
+
+def find_sensitive_names(value, path="$"):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if sensitive_name.search(key):
+                print(child_path)
+            find_sensitive_names(child, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            find_sensitive_names(child, f"{path}[{index}]")
+
+print("Property names that may need review:")
+find_sensitive_names(data)
+PY
+```
+
+The output had one top-level property, `config`, and no property names matching those terms. I then listed the nested property paths without printing values:
+
+```bash
+# WSL workstation
+python3 - <<'PY'
+import json
+import urllib.request
+
+url = "http://localhost:3000/rest/admin/application-configuration"
+with urllib.request.urlopen(url, timeout=10) as response:
+    data = json.load(response)
+
+def print_paths(value, path="$"):
+    if isinstance(value, dict):
+        for key, child in sorted(value.items()):
+            child_path = f"{path}.{key}"
+            print(child_path)
+            print_paths(child, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            print_paths(child, f"{path}[{index}]")
+
+print_paths(data.get("config", {}), "$.config")
+PY
+```
+
+The fields described frontend configuration, product data, and server settings. One was a Google OAuth `clientId`, an identifier rather than a secret. The name filter was only a first-pass check: it could not establish that every value was safe. Based on the paths and reviewed output, I treated this as public UI configuration and did not confirm sensitive-data exposure.
+
+I checked the related application-version endpoint next. First I captured its unauthenticated status and headers, then read its small JSON response:
+
+```bash
+# WSL workstation
+curl -sS -D - --max-time 10 -o /dev/null http://localhost:3000/rest/admin/application-version
+curl -sS --max-time 10 http://localhost:3000/rest/admin/application-version
+```
+
+It returned `{"version":"20.3.0"}` without authentication. I recorded this as low-sensitivity version metadata, not an authorization flaw.
+
+I then requested the discovered Score Board challenge record. This was a read-only query; `%20` encodes the space in the challenge name:
+
+```bash
+# WSL workstation
+curl -sS --max-time 10 'http://localhost:3000/api/Challenges/?name=Score%20Board'
+```
+
+The response contained challenge catalog fields such as name, category, description, difficulty, and `solved: false`. Those fields support the Juice Shop interface and did not confirm an API vulnerability. The AJAX results also contained “challenge solved” events for two challenges, but the results alone did not show that the Spider caused those state changes.
+
+Finally, I checked the response's CORS headers using a test origin. This request also did not modify application data:
+
+```bash
+# WSL workstation
+curl -sS -D - --max-time 10 -o /dev/null \
+  -H 'Origin: https://other-origin.example' \
+  'http://localhost:3000/api/Challenges/?name=Score%20Board'
+```
+
+I recorded these unauthenticated checks as initial triage observations. Later, in Section 5, I ran the API-focused ZAP scan and separate authenticated checks; those addressed broader route coverage and authorization questions.
+
+
 ## 3. SAST — Static Application Security Testing
 
 ### 3.1 I cloned the matching Juice Shop source and prepared Snyk
