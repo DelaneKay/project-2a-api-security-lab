@@ -4,6 +4,8 @@ Private lab repository containing the OWASP Juice Shop v20.3.0 security assessme
 
 ## Assessment package
 
+- [Step-by-step lab walkthrough](docs/step-by-step-lab-walkthrough.md)
+
 - [Consolidated assessment report](assessment/assessment-report-inventory.md)
 - [First-pass finding triage](assessment/triage-review.md)
 - [Risk register](assessment/risk-register.md)
