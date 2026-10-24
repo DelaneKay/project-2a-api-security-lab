@@ -95,30 +95,32 @@ Snyk authentication was configured for the lab account. I did not put authentica
 
 ### 1.4 I installed Docker on the isolated target before scanning
 
-The target VM did not have Docker, and its isolated network could not download packages directly. I used WSL to obtain the Ubuntu packages, moved them through the admin VM, and checked the files at each hop. This is the **first** Docker installation in the lab. The later Docker and Juice Shop troubleshooting was a separate event.
+The target VM did not have Docker, and its isolated network could not download packages directly. I used WSL to obtain the Ubuntu packages, moved them through the admin VM, and checked the files at each hop. This was the **first Docker installation** in the lab. The later Docker and Juice Shop troubleshooting was a separate event.
 
-**I checked the target and planned the package set.** From WSL, I checked free space, Ubuntu release, and the package version available to the target. I also confirmed the matching package version in WSL and simulated the target installation before downloading anything:
+**I checked the target and planned the package set.** From WSL, I connected through the admin node and ran these commands on the **target server**:
 
 ```bash
-# WSL: the target has enough space for the runtime.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 df -h /'
-
-# WSL: read the target release and Docker candidate version.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 cat /etc/os-release'
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 apt-cache policy docker.io'
-
-# WSL: refresh local package metadata, compare the candidate, and simulate the target install.
-sudo apt-get update
+df -h /
+cat /etc/os-release
 apt-cache policy docker.io
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 apt-get -s install docker.io'
+apt-get -s install docker.io
 ```
 
-The target was Ubuntu 26.04.1 and showed `docker.io` candidate `29.1.3-0ubuntu4.1`, matching WSL. The target simulation listed **eight new packages** and no removals. WSL's simulation listed more dependencies because the two machines already had different libraries installed. That is why I used the target's package plan, not a broad copy of WSL's APT cache.
-
-**I downloaded and staged the eight packages in WSL.** APT initially cached `docker.io`, `containerd`, and `runc` but skipped several dependencies already installed in WSL. I explicitly downloaded those five package files and copied only the eight required `.deb` files to a staging folder:
+The target was Ubuntu 26.04.1 and showed `docker.io` candidate `29.1.3-0ubuntu4.1`. The simulation listed eight new packages and no removals. I refreshed WSL's package metadata and checked that it offered the same Docker version:
 
 ```bash
-# WSL: download without installing Docker here.
+# WSL workstation
+sudo apt-get update
+apt-cache policy docker.io
+apt-get -s install docker.io
+```
+
+WSL's simulation listed more dependencies because the two machines had different libraries installed. I used the target's package plan, not a broad copy of WSL's APT cache.
+
+**I downloaded and staged the eight packages in WSL.** APT initially cached `docker.io`, `containerd`, and `runc` but skipped several dependencies already installed in WSL. I explicitly downloaded those five package files, then copied only the eight required `.deb` files to a staging folder:
+
+```bash
+# WSL workstation: download without installing Docker here.
 sudo apt-get --download-only --no-install-recommends install docker.io
 ls -lh /var/cache/apt/archives/*.deb
 sudo apt-get --download-only --reinstall --no-install-recommends install bridge-utils dns-root-data dnsmasq-base pigz ubuntu-fan
@@ -127,65 +129,92 @@ ls -lh /var/cache/apt/archives/*.deb
 mkdir -p ~/project-2a/staging/docker-packages
 cp /var/cache/apt/archives/{bridge-utils_1.7.1-4ubuntu3_amd64.deb,containerd_2.2.2-0ubuntu1.2_amd64.deb,dns-root-data_2025080400build1_all.deb,dnsmasq-base_2.92-1ubuntu0.5_amd64.deb,docker.io_29.1.3-0ubuntu4.1_amd64.deb,pigz_2.8-1build1_amd64.deb,runc_1.4.0-0ubuntu1_amd64.deb,ubuntu-fan_0.12.17_all.deb} ~/project-2a/staging/docker-packages/
 ls -lh ~/project-2a/staging/docker-packages
-```
-
-The staged files totalled about **71 MB**. I generated a checksum manifest and verified it in WSL before transferring the packages:
-
-```bash
 cd ~/project-2a/staging/docker-packages
 sha256sum *.deb > SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
-**I moved the packages through the two-node SSH path.** The admin VM had the key for the target VM, so I copied the files in two steps and verified the same manifest on both destinations:
+The staged packages totalled about **71 MB**. I verified their checksums locally before transferring them.
+
+**I copied the packages from WSL to the admin node.** In one WSL session, I created the destination folder on the **admin node**:
 
 ```bash
-# WSL → admin VM.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'mkdir -p ~/project-2a/staging/docker-packages'
+mkdir -p ~/project-2a/staging/docker-packages
+```
+
+Then, from the **WSL workstation**, I copied the manifest and package files:
+
+```bash
 scp -i ~/.ssh/mds_admin_ed25519 SHA256SUMS *.deb mdsadmin@192.168.56.101:~/project-2a/staging/docker-packages/
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'cd ~/project-2a/staging/docker-packages && sha256sum -c SHA256SUMS'
-
-# Admin VM → target VM.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "mkdir -p ~/project-2a/staging/docker-packages"'
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/docker-packages/* mdsadmin@192.168.77.10:~/project-2a/staging/docker-packages/'
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && sha256sum -c SHA256SUMS"'
 ```
 
-All eight packages reported `OK` on both the admin and target VMs. This mattered because the target could not simply fetch a missing or damaged package from the internet.
-
-**APT could plan the install but could not complete it offline.** My first dry run used `--no-download` and failed with `Unable to fetch some archives`; it did not install anything. A second dry run using the staged local paths showed the intended eight-package plan. I then attempted the local APT install, but it also tried to fetch archives and stopped with the same error:
+I checked the manifest on the **admin node**:
 
 ```bash
-# First target simulation: failed at archive lookup.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && apt-get --no-download -s install ./*.deb"'
-
-# Target simulation with local package paths: eight additions, no removals.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && apt-get -s install ./*.deb"'
-
-# Real APT attempt: failed because it still wanted to fetch archives.
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && sudo apt-get --no-download install ./*.deb"'
+cd ~/project-2a/staging/docker-packages
+sha256sum -c SHA256SUMS
 ```
 
-I changed to `dpkg` to install the files already present on the target. Its output showed `bridge-utils`, `containerd`, `runc`, `docker.io`, and the other staged packages unpacked and configured; the Docker service and socket systemd links were created:
+All eight package files reported `OK`.
+
+**I copied the packages from the admin node to the target server.** I created the destination folder on the **target server**:
 
 ```bash
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && sudo dpkg -i ./*.deb"'
+mkdir -p ~/project-2a/staging/docker-packages
 ```
 
-**I verified the service and checked the route before the application image step.** These are the exact two-hop checks recorded after the successful installation:
+Then, from the **admin node**, I used its target SSH key to transfer the files:
 
 ```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
+scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/docker-packages/* mdsadmin@192.168.77.10:~/project-2a/staging/docker-packages/
 ```
 
-The service returned `active`. The target route table showed Docker's `172.17.0.0/16` bridge and the original `192.168.77.0/24` lab route, with no default route. This confirmed that Docker had started without giving the isolated target an internet path. That was the checkpoint before I moved the Juice Shop image onto the target.
+I checked the same manifest on the **target server**:
+
+```bash
+cd ~/project-2a/staging/docker-packages
+sha256sum -c SHA256SUMS
+```
+
+Again, all eight packages reported `OK`. This confirmed that the files arrived unchanged before installation.
+
+**APT could plan the install but could not complete it offline.** On the **target server**, my first simulation using `--no-download` failed with `Unable to fetch some archives`; it made no changes. A second simulation using the staged local paths showed the intended eight-package plan. The install attempt still tried to fetch archives and failed:
+
+```bash
+# Target server: failed simulation at archive lookup.
+cd ~/project-2a/staging/docker-packages
+apt-get --no-download -s install ./*.deb
+
+# Target server: simulation using local package paths.
+apt-get -s install ./*.deb
+
+# Target server: actual APT attempt, which also failed to fetch archives.
+sudo apt-get --no-download install ./*.deb
+```
+
+I switched to `dpkg` to install the package files already on the **target server**:
+
+```bash
+cd ~/project-2a/staging/docker-packages
+sudo dpkg -i ./*.deb
+```
+
+The output showed `bridge-utils`, `containerd`, `runc`, `docker.io`, and the other staged packages unpacked and configured. Systemd links were created for the Docker service and socket.
+
+**I verified Docker and the network on the target server.** These checks ran on the **target server** after installation:
+
+```bash
+systemctl is-active docker
+ip route
+```
+
+The service returned `active`. The route table showed Docker's `172.17.0.0/16` bridge and the original `192.168.77.0/24` lab route, with no default route. This confirmed Docker had started without giving the isolated target an internet path.
 
 ### 1.5 I transferred, verified, and started the first Juice Shop container
 
-The target still had no default route, so I used the `bkimminich/juice-shop:latest` image already cached in WSL. I saved it as an archive rather than trying to pull from Docker Hub on the isolated target. I had recorded the WSL image ID as `sha256:2d370ec1…` and its repository digest before this transfer.
+The target still had no default route, so I used the `bkimminich/juice-shop:latest` image already cached in WSL. I saved it as an archive for transfer. The WSL image ID was `sha256:2d370ec1…` and its repository digest had been recorded before this transfer.
 
-**I saved the image and made an archive checksum.** From WSL, I ran:
+**I saved the image and made an archive checksum in WSL.**
 
 ```bash
 docker save --output ~/project-2a/staging/juice-shop.tar bkimminich/juice-shop:latest
@@ -194,69 +223,91 @@ sha256sum juice-shop.tar > juice-shop.tar.sha256
 ls -lh juice-shop.tar juice-shop.tar.sha256
 ```
 
-The archive was about **347 MB**. The checksum file let me verify that the same archive reached each VM. I copied both files to the admin VM and then to the target, checking the archive at each hop:
+The archive was about **347 MB**. I copied both files from **WSL to the admin node**:
 
 ```bash
-# WSL → admin VM; then verify on the admin VM.
 scp -i ~/.ssh/mds_admin_ed25519 juice-shop.tar juice-shop.tar.sha256 mdsadmin@192.168.56.101:~/project-2a/staging/
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'cd ~/project-2a/staging && sha256sum -c juice-shop.tar.sha256'
-
-# Admin VM → target VM; then verify on the target VM.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/juice-shop.tar ~/project-2a/staging/juice-shop.tar.sha256 mdsadmin@192.168.77.10:~/project-2a/staging/'
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging && sha256sum -c juice-shop.tar.sha256"'
 ```
 
-Both destination checks returned `juice-shop.tar: OK`. I then imported the verified archive into the **target's** Docker image store:
+On the **admin node**, I verified the archive checksum:
 
 ```bash
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker load --input ~/project-2a/staging/juice-shop.tar"'
+cd ~/project-2a/staging
+sha256sum -c juice-shop.tar.sha256
+```
+
+It returned `juice-shop.tar: OK`. From the **admin node**, I copied the archive and manifest to the target server:
+
+```bash
+scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/juice-shop.tar ~/project-2a/staging/juice-shop.tar.sha256 mdsadmin@192.168.77.10:~/project-2a/staging/
+```
+
+On the **target server**, I checked the checksum again:
+
+```bash
+cd ~/project-2a/staging
+sha256sum -c juice-shop.tar.sha256
+```
+
+It also returned `juice-shop.tar: OK`. I loaded the verified archive into Docker on the **target server**:
+
+```bash
+sudo docker load --input ~/project-2a/staging/juice-shop.tar
 ```
 
 Docker reported `Loaded image: bkimminich/juice-shop:latest`. Loading the image did not start the application.
 
-**I investigated a mismatch before running it.** My first remote `docker image inspect` failed with `sudo: A terminal is required to authenticate`. I retried with `-t` at both SSH hops. The target then reported image ID `sha256:9a55bcd1…`, while WSL reported `sha256:2d370ec1…`. I paused instead of assuming the archive was the wrong file:
+**I investigated an image ID mismatch before running it.** My first attempt to inspect the image on the **target server** through non-interactive SSH failed because `sudo` required a terminal. I retried from WSL with a terminal allocated at both SSH hops. The target-side command was:
 
 ```bash
-# Failed: no terminal for the target's sudo prompt.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format '\''{{.Id}}'\'' bkimminich/juice-shop:latest"'
+# Target server: the first, non-interactive attempt failed at sudo authentication.
+sudo docker image inspect --format '{{.Id}}' bkimminich/juice-shop:latest
 
-# Corrected: allocate a terminal through both hops.
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format={{.Id}} bkimminich/juice-shop:latest"'
-docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDigests}}' bkimminich/juice-shop:latest
+# Target server: retry in an interactive target shell.
+sudo docker image inspect --format '{{.Id}}' bkimminich/juice-shop:latest
 ```
 
-I checked the archive's manifest and config hash in WSL. The archive contained the `2d370ec1…` config ID, matching the WSL source image. I then compared the ordered root filesystem layer lists. My first layer-inspection command had an unquoted format expression and failed; `sha256sum` therefore hashed the error/empty output rather than valid layer data. I reran it with the format quoted:
+The target reported image ID `sha256:9a55bcd1…`; WSL reported `sha256:2d370ec1…`. I paused and compared the archive manifest, config hash, and image layers instead of assuming the copy was bad.
+
+On **WSL**, I inspected the archive manifest and confirmed its config blob hashed to the WSL image ID. I also corrected a layer-inspection command after an unquoted format expression caused an error and produced a meaningless hash:
 
 ```bash
-# WSL: inspect the archive manifest and config blob.
+# WSL workstation
 cd ~/project-2a/staging
 tar -xOf juice-shop.tar manifest.json
 tar -xOf juice-shop.tar blobs/sha256/2d370ec11ab40bc24b3516c042f7317a053c80f668e572538469d1fd7e91d7f8 | sha256sum
+docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDigests}}' bkimminich/juice-shop:latest
 
-# WSL: corrected layer-list fingerprint.
+# WSL workstation: corrected fingerprint of the ordered image layer list.
 docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-shop:latest | sha256sum
-
-# Target: layer-list fingerprint and platform.
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format '\''{{json .RootFS.Layers}}'\'' bkimminich/juice-shop:latest | sha256sum"'
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format '\''OS={{.Os}} ARCH={{.Architecture}} SIZE={{.Size}}'\'' bkimminich/juice-shop:latest"'
 ```
 
-The config blob hashed to `2d370ec1…`; both layer-list checks returned `36fd80fb…`; and the target reported `OS=linux ARCH=amd64`. The image IDs still differed between Docker stores, so I recorded that distinction. The archive checksums and matching layer lists supported continuing with the isolated lab image.
-
-**I started Juice Shop only on the target's private interface.** From WSL, I used the two-hop SSH path to run the container with a restart policy and bind port 3000 to `192.168.77.10`:
+On the **target server**, I checked the full image ID, compared its layer-list fingerprint, and confirmed the image platform:
 
 ```bash
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker run -d --name juice-shop --restart unless-stopped -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest"'
-ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker ps --filter name=juice-shop"'
+sudo docker image ls --no-trunc bkimminich/juice-shop:latest
+sudo docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-shop:latest | sha256sum
+sudo docker image inspect --format 'OS={{.Os}} ARCH={{.Architecture}} SIZE={{.Size}}' bkimminich/juice-shop:latest
 ```
 
-The run returned container ID `5440dc6a…`. `docker ps` showed it **Up** with `192.168.77.10:3000->3000/tcp`. I then checked HTTP from the admin VM, which could reach the target's private network:
+The config blob hashed to `2d370ec1…`; both layer-list checks returned `36fd80fb…`; and the target reported `OS=linux ARCH=amd64`. The image IDs differed between Docker stores, but the archive checksums and matching layer lists supported using the transferred image in this isolated lab.
+
+**I started Juice Shop on the target server's private interface.** At the **target server** shell, I ran the container and checked its status:
 
 ```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 5 http://192.168.77.10:3000/'
+sudo docker run -d --name juice-shop --restart unless-stopped -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest
+sudo docker ps --filter name=juice-shop
 ```
 
-It returned `HTTP 200`. Windows could not open the isolated `192.168.77.10` address directly, so I opened an SSH tunnel from WSL through the admin VM and left that terminal running:
+The run returned container ID `5440dc6a…`. `docker ps` showed it **Up** with `192.168.77.10:3000->3000/tcp`.
+
+**I checked the app from the admin node.** This HTTP request ran on the **admin node** and returned `HTTP 200`:
+
+```bash
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 http://192.168.77.10:3000/
+```
+
+Windows could not open the isolated `192.168.77.10` address directly, so I started an SSH tunnel in **WSL** and left that terminal running:
 
 ```bash
 ssh -N -L 3000:192.168.77.10:3000 -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
