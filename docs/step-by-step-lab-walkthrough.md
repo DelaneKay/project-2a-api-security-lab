@@ -33,7 +33,7 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 | Stage | Sequence |
 | --- | --- |
-| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm → install dependencies → confirm the Snyk CLI. |
+| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm and Snyk → install dependencies → install Docker on the target and check its service and routes. |
 | [2. SCA](#2-sca--software-composition-analysis) | Scan dependencies → interpret advisory/path output → preserve individual findings. |
 | [3. SAST](#3-sast--static-application-security-testing) | Scan source → separate application code from tests/challenge examples → record findings. |
 | [4. DAST](#4-dast--dynamic-application-security-testing) | Restore target reachability → baseline crawl → AJAX Spider → interpret scan limits. |
@@ -93,7 +93,88 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Snyk authentication was configured for the lab account. I did not put authentication tokens or other credentials in commands or commit them to the repository.
 
-**Checkpoint:** The source checkout was present, Node.js/npm worked for the WSL user, dependencies were installed, and the Snyk CLI could start. I could now run SCA and SAST against the code while separately bringing up the application for DAST.
+### 1.4 I installed Docker on the target and checked its network state
+
+The Juice Shop application needed a container runtime on the **target node**. I reached that node through the admin node, installed Ubuntu's `docker.io` package, and checked the service before trying to load an image. The retained paste begins with `apt` output rather than the installation command itself, so the first block shows the repeatable terminal sequence and the second block records what `apt` reported:
+
+```bash
+# WSL workstation: connect to the admin node.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
+
+# Admin node: connect to the target node.
+ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
+
+# Target node: install the Docker package.
+sudo apt update
+sudo apt install docker.io
+```
+
+<details>
+<summary>Docker installation output preserved from the target</summary>
+
+```text
+Selecting previously unselected package bridge-utils.
+(Reading database… 98771 files and directories currently installed.)
+Preparing to unpack …/bridge-utils_1.7.1-4ubuntu3_amd64.deb…
+Unpacking bridge-utils (1.7.1-4ubuntu3)…
+Selecting previously unselected package containerd.
+Preparing to unpack …/containerd_2.2.2-0ubuntu1.2_amd64.deb…
+Unpacking containerd (2.2.2-0ubuntu1.2)…
+Selecting previously unselected package dnsmasq-base.
+Preparing to unpack …/dnsmasq-base_2.92-1ubuntu0.5_amd64.deb…
+Unpacking dnsmasq-base (2.92-1ubuntu0.5)…
+Selecting previously unselected package dns-root-data.
+Preparing to unpack …/dns-root-data_2025080400build1_all.deb…
+Unpacking dns-root-data (2025080400build1)…
+Selecting previously unselected package docker.io.
+Preparing to unpack …/docker.io_29.1.3-0ubuntu4.1_amd64.deb…
+Unpacking docker.io (29.1.3-0ubuntu4.1)…
+Selecting previously unselected package pigz.
+Preparing to unpack ./pigz_2.8-1build1_amd64.deb…
+Unpacking pigz (2.8-1build1)…
+Selecting previously unselected package runc.
+Preparing to unpack …/runc_1.4.0-0ubuntu1_amd64.deb…
+Unpacking runc (1.4.0-0ubuntu1)…
+Selecting previously unselected package ubuntu-fan.
+Preparing to unpack ./ubuntu-fan_0.12.17_all.deb…
+Unpacking ubuntu-fan (0.12.17)…
+Setting up bridge-utils (1.7.1-4ubuntu3)…
+Setting up dnsmasq-base (2.92-1ubuntu0.5)…
+Setting up dns-root-data (2025080400build1)…
+Setting up pigz (2.8-1build1)…
+Setting up runc (1.4.0-0ubuntu1)…
+Setting up ubuntu-fan (0.12.17)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/ubuntu-fan.service' → '/usr/lib/systemd/system/ubuntu-fan.service'.
+Setting up containerd (2.2.2-0ubuntu1.2)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/containerd.service' → '/usr/lib/systemd/system/containerd.service'.
+Setting up docker.io (29.1.3-0ubuntu4.1)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/docker.service' → '/usr/lib/systemd/system/docker.service'.
+Created symlink '/etc/systemd/system/sockets.target.wants/docker.socket' → '/usr/lib/systemd/system/docker.socket'.
+Processing triggers for man-db (2.13.1-1build1)…
+Processing triggers for dbus (1.16.2-2ubuntu4)…
+Connection to 192.168.77.10 closed.
+Connection to 192.168.56.101 closed.
+```
+
+</details>
+
+The `docker.io`, `containerd`, and `runc` packages were installed, and `apt` created systemd service and socket links. I did not treat the links alone as proof that Docker was running. From **WSL**, I made the two-hop service check shown in the lab record:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 \
+  'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
+```
+
+It returned `active`. Docker can add a virtual bridge and routes, so I also checked the target's route table through the same path before loading Juice Shop:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 \
+  'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
+```
+
+The pasted record does not include the route output, so I use the command to show the check without claiming a specific route change. Later, when HTTP requests timed out, I returned to the target's interface, Docker bridge, and forwarding rules in Section 4.1.
+
+**Checkpoint:** Node.js/npm and Snyk were ready in WSL, and Docker reported `active` on the target. I could scan the source and dependencies while preparing the containerized app for DAST.
 
 ## 2. SCA — Software Composition Analysis
 
