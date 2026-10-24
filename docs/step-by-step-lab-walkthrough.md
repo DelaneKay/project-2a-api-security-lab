@@ -2,7 +2,7 @@
 
 - **Core technologies:** Ubuntu in WSL, a hardened Ubuntu admin node, a hardened Ubuntu target node, Docker, OWASP Juice Shop, Snyk Open Source, Snyk Code, and OWASP ZAP.
 - **Problem addressed:** I needed to assess an intentionally vulnerable web application across its dependencies, source code, web behavior, and API authorization, then record findings for the teams responsible for remediation.
-- **Outcome:** I completed SCA and SAST scans, ran ZAP baseline/AJAX/API testing, and combined tool-driven results with targeted manual API checks. I documented individual findings, triage, and remediation ownership in this repository. I did not modify Juice Shop or remediate the findings; the next action belongs to the development/service owners.
+- **Outcome:** I completed SCA and SAST scans, used ZAP baseline and AJAX Spider scans for DAST, and assessed API security with ZAP API Scan plus targeted manual checks. I documented individual findings, triage, and remediation ownership in this repository. I did not modify Juice Shop or remediate the findings; the next action belongs to the development/service owners.
 
 This walkthrough records how I carried out Project 2A, what I learned from each assessment stage, the problems that interrupted the work, and how I restored a reliable test path. It follows the same practical, first-person style as the Project 01B walkthrough. Commands are examples from the lab sequence; credentials, private keys, and passwords are intentionally omitted.
 
@@ -15,9 +15,9 @@ The target application was **OWASP Juice Shop**, a deliberately insecure web app
 The assessment covered four related but distinct areas:
 
 1. **SCA — Software Composition Analysis:** identify known vulnerabilities in direct and transitive dependencies.
-2. **SAST — Static Application Security Testing:** inspect source code for risky patterns without running the application.
-3. **DAST — Dynamic Application Security Testing:** exercise the running application with ZAP and review its observed responses.
-4. **API Security:** assess API route discovery, access control, token validation, input handling, and response behavior. This used both ZAP automation and narrowly scoped manual checks.
+2. **SAST — Static Application Security Testing:** a **white-box** assessment because I had access to Juice Shop's source code. Snyk Code inspected source paths and code patterns without executing those paths in the running service. In this lab, that let me connect alerts to files and lines and review whether a pattern belonged to application code, tests, or an intentional training challenge.
+3. **DAST — Dynamic Application Security Testing:** a **black-box** assessment of the running Juice Shop over HTTP using ZAP's baseline and AJAX Spider. I tested from the outside through the exposed web interface without giving those scans source-code access. In this lab, ZAP observed reachable pages, headers, and responses; it could not know the source intent or fully establish authenticated authorization behavior from the unauthenticated crawl.
+4. **API Security:** an API-focused assessment of discovered routes, access control, token validation, input handling, and response behavior. I used ZAP API Scan for automated requests and separate, narrowly scoped manual checks for authenticated object-level authorization and token acceptance. The API scan is dynamic testing of API endpoints; it is presented separately here because the questions and evidence concern API-specific controls.
 
 The purpose was to show the DevSecOps assessment and handoff process: collect evidence, explain impact and uncertainty, prioritize, and create actionable work for developers and service owners. I did not fix the source because the developers own application changes. DevSecOps helps teams interpret results, set verification expectations, and confirm a later fix.
 
@@ -36,8 +36,8 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 | [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm → install dependencies → confirm the Snyk CLI. |
 | [2. SCA](#2-sca--software-composition-analysis) | Scan dependencies → interpret advisory/path output → preserve individual findings. |
 | [3. SAST](#3-sast--static-application-security-testing) | Scan source → separate application code from tests/challenge examples → record findings. |
-| [4. DAST](#4-dast--dynamic-application-security-testing) | Restore target reachability → baseline crawl → AJAX Spider → API Scan → interpret scan limits. |
-| [5. API Security](#5-api-security) | Combine tool evidence with bounded two-account, token, and response checks. |
+| [4. DAST](#4-dast--dynamic-application-security-testing) | Restore target reachability → baseline crawl → AJAX Spider → interpret scan limits. |
+| [5. API Security](#5-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
 | [6. Assessment handoff](#6-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
 
 **Starting point:** The servers had been hardened in Project 1A and the Juice Shop source checkout was available in WSL. I used the lab accounts and SSH access already established for this environment. I did not include private key material or account passwords in this repository.
@@ -117,7 +117,7 @@ The output also contained High findings in legacy JWT packages, lodash, and othe
 
 ### 3.1 I scanned first-party source separately
 
-SAST analyzes source patterns without sending requests to the running Juice Shop instance. I used Snyk Code on the project checkout:
+SAST is white-box here: I could inspect the application's source code and let Snyk Code analyze it without sending requests to the running Juice Shop instance. That gave me file-path context which a black-box web scan does not have. I used Snyk Code on the project checkout:
 
 ```bash
 "$HOME/.local/bin/snyk" code test
@@ -131,7 +131,7 @@ The path is important evidence. The 26 High records were in application-source p
 
 Juice Shop intentionally includes vulnerable implementations to support training. That context does not make a scanner alert false by itself: the result still needs source review, challenge context, and an understanding of what is built and deployed. The triage file marks uncertain items as candidates pending that review.
 
-**Checkpoint:** SAST supplied code locations and risky patterns for developer review. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
+**Checkpoint:** SAST supplied code locations and risky patterns for developer review because this was a white-box scan with source access. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
 
 ## 4. DAST — Dynamic Application Security Testing
 
@@ -156,31 +156,31 @@ curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 10 http://localhost:30
 
 It returned `HTTP 200`. That was the reachability checkpoint for the later scans. An HTTP `000` remained a connectivity failure, not an application finding.
 
-### 4.2 I ran a passive ZAP baseline and compared spider coverage
+### 4.2 I ran ZAP baseline and AJAX Spider scans
 
-With the target reachable, I used OWASP ZAP to crawl and passively assess the web application. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
+With the target reachable, I used OWASP ZAP in a black-box DAST assessment: the scanner interacted with the live web application over HTTP and evaluated the pages and responses it could reach, without reading the source code. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
 An AJAX-enabled baseline discovered 35 URLs in that run. A separate direct Spider API crawl found 94 traditional Spider URLs and 91 AJAX Spider URLs. The AJAX crawl exposed API routes and client-loaded resources that the traditional crawl missed. These counts came from different runs/settings; I recorded them as crawl coverage rather than comparing them as vulnerability counts.
 
 **Problem I encountered:** The first AJAX attempt timed out while the SSH tunnel was down. After restoring connectivity I ran the Spider API crawl separately. This helped distinguish a scan configuration/connectivity failure from an application response and prevented the timeout from being reported as a security issue.
 
-### 4.3 I ran ZAP API Scan and reviewed alert evidence
+The scan was black-box: ZAP evaluated externally visible behavior and did not inspect source code. The SAST stage supplied the complementary white-box view of code paths. For API-specific probing, I describe ZAP's API Scan with the API Security results in the next section.
 
-The ZAP API Scan imported 16 URLs and reported 53 total URLs, 108 PASS checks, 0 FAIL, and 7 warning types. Its report listed 37 endpoints, all GET, and noted slow responses. The scan was unauthenticated and covered only the imported API surface plus scanner-generated requests.
-
-ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge.
-
-Other ZAP observations included server-error responses, unexpected content types, missing CSP, wildcard CORS, timestamps, and a private IP value in configuration output. The available evidence did not establish sensitive stack-trace disclosure, authenticated cross-origin data access, or secret exposure. The DAST appendix preserves the recorded alert types, counts, and examples, and the consolidated report explains confidence and limitations.
-
-**Checkpoint:** DAST found behaviors worth triaging and helped discover API surface. The report distinguishes a vulnerability supported by source evidence from scanner signals that need endpoint-specific validation.
+**Checkpoint:** DAST discovered reachable pages and response-level behaviors from the outside. The report distinguishes observed responses from source-confirmed issues and scanner signals that still need endpoint-specific validation.
 
 ## 5. API Security
 
-API security used two complementary methods. ZAP provided repeatable route discovery and generated probes across the imported API surface. Manual checks answered targeted questions ZAP's unauthenticated scan could not answer, especially whether one signed-in user could access another user's object and whether an unsigned token was accepted. The manual checks were read-only where possible and used two lab test accounts.
+API security used two complementary methods. ZAP API Scan provided repeatable route discovery and generated probes across the imported API surface. Manual checks answered targeted questions the unauthenticated scan could not answer, especially whether one signed-in user could access another user's object and whether an unsigned token was accepted. The manual checks were read-only where possible and used two lab test accounts.
 
-### 5.1 I established the API surface with automation
+### 5.1 I ran the ZAP API Scan and established the API surface
 
-The AJAX Spider and API Scan surfaced routes including challenge and quantity endpoints, product search, languages, application version/configuration, and user-related routes. I then inspected selected responses and kept tool evidence separate from manual evidence. A route returning `200` is not automatically a vulnerability: the response data and intended access policy matter.
+The AJAX Spider and API Scan surfaced routes including challenge and quantity endpoints, product search, languages, application version/configuration, and user-related routes. The API Scan imported 16 URLs and reported 53 total URLs, 108 PASS checks, 0 FAIL, and 7 warning types. Its report listed 37 endpoints, all using GET, and noted slow responses. It was unauthenticated and covered only the imported API surface plus scanner-generated requests.
+
+ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge.
+
+Other ZAP API observations included server-error responses, unexpected content types, missing CSP, wildcard CORS, timestamps, and a private IP value in configuration output. The available evidence did not establish sensitive stack-trace disclosure, authenticated cross-origin data access, or secret exposure. The API and DAST appendices preserve the counts and examples with their limits.
+
+I then inspected selected responses and kept tool evidence separate from manual evidence. A route returning `200` is not automatically a vulnerability: the response data and intended access policy matter.
 
 For example, the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. This was recorded as a potential business-data exposure for an owner to assess, because the evidence did not define whether the lab intended those values to be public. The anonymous `/api/Users` request returned `401`, which was positive evidence that anonymous access was denied on that route.
 
