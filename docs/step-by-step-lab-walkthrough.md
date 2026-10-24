@@ -44,9 +44,17 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 ## 1. Prepare the code and tools
 
-### 1.1 I checked the source checkout before running Snyk
+### 1.1 I cloned the matching Juice Shop source
 
-In **WSL**, I checked that I was in the Juice Shop source checkout and that the project files needed for scanning were there:
+The source folder was missing when I prepared for the code scans. In **WSL**, I cloned the official Juice Shop repository at `v20.3.0`, matching the application image version used in the lab. I used a shallow clone to avoid downloading the full Git history:
+
+```bash
+# WSL workstation
+cd ~/project-2a
+git clone --depth 1 --branch v20.3.0 https://github.com/juice-shop/juice-shop.git juice-shop-source
+```
+
+After cloning, I checked that the checkout and package manifest were present:
 
 ```bash
 # WSL workstation
@@ -55,7 +63,7 @@ pwd
 ls -l package.json package-lock.json
 ```
 
-The checkout had `package.json`, but no `package-lock.json` or `node_modules` folder. Without the lockfile, I could scan the dependencies installed locally, but I could not reproduce the exact dependency versions from a committed lockfile.
+The listing showed `package.json`, but no `package-lock.json`. That meant Snyk could inspect the dependencies resolved locally after installation, but I could not reproduce exact dependency versions from a lockfile committed with this checkout.
 
 ### 1.2 I fixed missing Node.js and npm in WSL
 
@@ -70,10 +78,6 @@ sudo apt install nodejs npm
 node --version
 npm --version
 ```
-
-My first Snyk test stopped because the checkout had no `node_modules` directory. I installed the project dependencies in WSL, then confirmed the directory had been created:
-
-That gave Snyk a dependency tree to scan. Since the checkout had no lockfile, I recorded that these locally resolved versions might not exactly match the original build.
 
 ### 1.3 I checked Snyk CLI access
 
