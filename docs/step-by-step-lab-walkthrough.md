@@ -93,36 +93,93 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Snyk authentication was configured for the lab account. I did not put authentication tokens or other credentials in commands or commit them to the repository.
 
-### 1.4 I installed Docker on the target before the scans
+### 1.4 I installed Docker on the isolated target before scanning
 
-The target was the Docker host, so I connected from **WSL** to the **admin node**, then from the admin node to the **target node**. These were separate shells; I could not assume a key stored in WSL was available on the servers. The pasted record retained the installation output, but not the command that started it. These are the installation steps and the exact SSH, service, and route checks I retained:
+The target VM did not have Docker, and its isolated network could not download packages directly. I used WSL to obtain the Ubuntu packages, moved them through the admin VM, and checked the files at each hop. This is the **first** Docker installation in the lab. The later Docker and Juice Shop troubleshooting was a separate event.
+
+**I checked the target and planned the package set.** From WSL, I checked free space, Ubuntu release, and the package version available to the target. I also confirmed the matching package version in WSL and simulated the target installation before downloading anything:
 
 ```bash
-# WSL workstation: connect to the admin node.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
+# WSL: the target has enough space for the runtime.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 df -h /'
 
-# Admin node: connect to the target node.
-ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
+# WSL: read the target release and Docker candidate version.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 cat /etc/os-release'
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 apt-cache policy docker.io'
 
-# Target node: refresh package metadata and install Docker.
-sudo apt update
-sudo apt install docker.io
+# WSL: refresh local package metadata, compare the candidate, and simulate the target install.
+sudo apt-get update
+apt-cache policy docker.io
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 apt-get -s install docker.io'
 ```
 
-The installation output showed `containerd`, `runc`, and `docker.io` being set up and systemd links created for the Docker service and socket. I verified the service from **WSL** with the exact two-hop command recorded in the chat:
+The target was Ubuntu 26.04.1 and showed `docker.io` candidate `29.1.3-0ubuntu4.1`, matching WSL. The target simulation listed **eight new packages** and no removals. WSL's simulation listed more dependencies because the two machines already had different libraries installed. That is why I used the target's package plan, not a broad copy of WSL's APT cache.
+
+**I downloaded and staged the eight packages in WSL.** APT initially cached `docker.io`, `containerd`, and `runc` but skipped several dependencies already installed in WSL. I explicitly downloaded those five package files and copied only the eight required `.deb` files to a staging folder:
+
+```bash
+# WSL: download without installing Docker here.
+sudo apt-get --download-only --no-install-recommends install docker.io
+ls -lh /var/cache/apt/archives/*.deb
+sudo apt-get --download-only --reinstall --no-install-recommends install bridge-utils dns-root-data dnsmasq-base pigz ubuntu-fan
+ls -lh /var/cache/apt/archives/*.deb
+
+mkdir -p ~/project-2a/staging/docker-packages
+cp /var/cache/apt/archives/{bridge-utils_1.7.1-4ubuntu3_amd64.deb,containerd_2.2.2-0ubuntu1.2_amd64.deb,dns-root-data_2025080400build1_all.deb,dnsmasq-base_2.92-1ubuntu0.5_amd64.deb,docker.io_29.1.3-0ubuntu4.1_amd64.deb,pigz_2.8-1build1_amd64.deb,runc_1.4.0-0ubuntu1_amd64.deb,ubuntu-fan_0.12.17_all.deb} ~/project-2a/staging/docker-packages/
+ls -lh ~/project-2a/staging/docker-packages
+```
+
+The staged files totalled about **71 MB**. I generated a checksum manifest and verified it in WSL before transferring the packages:
+
+```bash
+cd ~/project-2a/staging/docker-packages
+sha256sum *.deb > SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+**I moved the packages through the two-node SSH path.** The admin VM had the key for the target VM, so I copied the files in two steps and verified the same manifest on both destinations:
+
+```bash
+# WSL → admin VM.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'mkdir -p ~/project-2a/staging/docker-packages'
+scp -i ~/.ssh/mds_admin_ed25519 SHA256SUMS *.deb mdsadmin@192.168.56.101:~/project-2a/staging/docker-packages/
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'cd ~/project-2a/staging/docker-packages && sha256sum -c SHA256SUMS'
+
+# Admin VM → target VM.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "mkdir -p ~/project-2a/staging/docker-packages"'
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/docker-packages/* mdsadmin@192.168.77.10:~/project-2a/staging/docker-packages/'
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && sha256sum -c SHA256SUMS"'
+```
+
+All eight packages reported `OK` on both the admin and target VMs. This mattered because the target could not simply fetch a missing or damaged package from the internet.
+
+**APT could plan the install but could not complete it offline.** My first dry run used `--no-download` and failed with `Unable to fetch some archives`; it did not install anything. A second dry run using the staged local paths showed the intended eight-package plan. I then attempted the local APT install, but it also tried to fetch archives and stopped with the same error:
+
+```bash
+# First target simulation: failed at archive lookup.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && apt-get --no-download -s install ./*.deb"'
+
+# Target simulation with local package paths: eight additions, no removals.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && apt-get -s install ./*.deb"'
+
+# Real APT attempt: failed because it still wanted to fetch archives.
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && sudo apt-get --no-download install ./*.deb"'
+```
+
+I changed to `dpkg` to install the files already present on the target. Its output showed `bridge-utils`, `containerd`, `runc`, `docker.io`, and the other staged packages unpacked and configured; the Docker service and socket systemd links were created:
+
+```bash
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging/docker-packages && sudo dpkg -i ./*.deb"'
+```
+
+**I verified the service and checked the route before the application image step.** These are the exact two-hop checks recorded after the successful installation:
 
 ```bash
 ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
-```
-
-It returned `active`. Docker adds a virtual bridge and may change routes, so I checked the target's route table through the same two-hop path before loading the application image:
-
-```bash
 ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
 ```
 
-This was the first Docker installation. I stopped here, before the first Juice Shop image command. The later Docker failure and repeat setup belong to a later stage of the lab.
-
+The service returned `active`. The target route table showed Docker's `172.17.0.0/16` bridge and the original `192.168.77.0/24` lab route, with no default route. This confirmed that Docker had started without giving the isolated target an internet path. I stopped this stage here, just before saving and transferring the Juice Shop image.
 
 ## 2. SCA — Software Composition Analysis
 
