@@ -33,13 +33,12 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 | Stage | Sequence |
 | --- | --- |
-| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm and Snyk → install dependencies. |
+| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm and Snyk → install dependencies → install Docker on the target and verify its service and routes. |
 | [2. SCA](#2-sca--software-composition-analysis) | Scan dependencies → interpret advisory/path output → preserve individual findings. |
 | [3. SAST](#3-sast--static-application-security-testing) | Scan source → separate application code from tests/challenge examples → record findings. |
-| [4. Prepare the target with Docker](#4-prepare-the-target-with-docker) | Install Docker → verify the service → check the target routes, stopping before the Juice Shop image step. |
-| [5. DAST](#5-dast--dynamic-application-security-testing) | Baseline crawl → AJAX Spider → interpret scan limits. |
-| [6. API Security](#6-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
-| [7. Assessment handoff](#7-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
+| [4. DAST](#4-dast--dynamic-application-security-testing) | Baseline crawl → AJAX Spider → interpret scan limits. |
+| [5. API Security](#5-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
+| [6. Assessment handoff](#6-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
 
 **Starting point:** The servers had been hardened in Project 1A Linux Server Hardening and the Juice Shop source checkout was available in WSL. I used the lab accounts and SSH access already established for this environment. I did not include private key material or account passwords in this repository.
 
@@ -93,6 +92,37 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Snyk authentication was configured for the lab account. I did not put authentication tokens or other credentials in commands or commit them to the repository.
+
+### 1.4 I installed Docker on the target before the scans
+
+The target was the Docker host, so I connected from **WSL** to the **admin node**, then from the admin node to the **target node**. These were separate shells; I could not assume a key stored in WSL was available on the servers. The pasted record retained the installation output, but not the command that started it. These are the installation steps and the exact SSH, service, and route checks I retained:
+
+```bash
+# WSL workstation: connect to the admin node.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
+
+# Admin node: connect to the target node.
+ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
+
+# Target node: refresh package metadata and install Docker.
+sudo apt update
+sudo apt install docker.io
+```
+
+The installation output showed `containerd`, `runc`, and `docker.io` being set up and systemd links created for the Docker service and socket. I verified the service from **WSL** with the exact two-hop command recorded in the chat:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
+```
+
+It returned `active`. Docker adds a virtual bridge and may change routes, so I checked the target's route table through the same two-hop path before loading the application image:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
+```
+
+This was the first Docker installation. I stopped here, before the first Juice Shop image command. The later Docker failure and repeat setup belong to a later stage of the lab.
+
 
 ## 2. SCA — Software Composition Analysis
 
@@ -150,41 +180,9 @@ The source review found that `routes/search.ts` builds a SQL expression using th
 
 **Checkpoint:** SAST supplied code locations and risky patterns for developer review because this was a white-box scan with source access. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
 
-## 4. Prepare the target with Docker
+## 4. DAST — Dynamic Application Security Testing
 
-### 4.1 I completed the first Docker installation on the target
-
-The target was the Docker host, so I connected from **WSL** to the **admin node**, then from the admin node to the **target node**. These were separate shells; I could not assume a key stored in WSL was available on the servers. The pasted record retained the installation output, but not the command that started it. These are the installation steps and the exact SSH, service, and route checks I retained:
-
-```bash
-# WSL workstation: connect to the admin node.
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
-
-# Admin node: connect to the target node.
-ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10
-
-# Target node: refresh package metadata and install Docker.
-sudo apt update
-sudo apt install docker.io
-```
-
-The installation took longer than expected and appeared frozen. The SSH connections then closed, but the terminal output showed `containerd`, `runc`, and `docker.io` being set up and systemd links created for the Docker service and socket. A closed SSH session did not tell me whether installation succeeded, so I verified the service from **WSL** with the exact two-hop command recorded in the chat:
-
-```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 systemctl is-active docker'
-```
-
-It returned `active`. Docker adds a virtual bridge and may change routes, so I checked the target's route table through the same two-hop path before loading the application image:
-
-```bash
-ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
-```
-
-This is where the Docker installation stage ended. I stopped this stage before the first Juice Shop image command.
-
-## 5. DAST — Dynamic Application Security Testing
-
-### 5.1 I ran ZAP baseline and AJAX Spider scans
+### 4.1 I ran ZAP baseline and AJAX Spider scans
 
 I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which I investigated later before the API scan continued on port 3001. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
@@ -310,11 +308,11 @@ PY
 ```
 
 
-## 6. API Security
+## 5. API Security
 
 I used two methods to assess API security. ZAP API Scan discovered routes and sent generated requests across the imported API surface. I then used two lab accounts to answer questions the unauthenticated scan could not answer: could one user read another user's basket, and would the application accept an unsigned token? I kept those checks read-only.
 
-### 6.1 I ran the ZAP API Scan and established the API surface
+### 5.1 I ran the ZAP API Scan and established the API surface
 
 The AJAX Spider and API Scan surfaced routes including challenge and quantity endpoints, product search, languages, application version/configuration, and user-related routes. The API Scan imported 16 URLs and reported 53 total URLs, 108 PASS checks, 0 FAIL, and 7 warning types. Its report listed 37 endpoints, all using GET, and noted slow responses. It was unauthenticated and covered only the imported API surface plus scanner-generated requests.
 
@@ -433,7 +431,7 @@ curl -sS -i --max-time 10 --get --data-urlencode "q='" \
 
 For example, the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. This was recorded as a potential business-data exposure for an owner to assess, because the evidence did not define whether the lab intended those values to be public. The anonymous `/api/Users` request returned `401`, which was positive evidence that anonymous access was denied on that route.
 
-### 6.2 I tested cross-account basket authorization
+### 5.2 I tested cross-account basket authorization
 
 The automated API scan was unauthenticated, so it could not establish cross-account object authorization. Before sending a live request, I examined the basket route and its tests in the source checkout. The saved source output showed `GET /rest/basket/:id`, a basket lookup by the requested ID, and tests for cross-user access and forged JWTs. I use these commands to revisit those lines from the **WSL terminal**; the exact original source-search command was not retained:
 
@@ -522,7 +520,7 @@ Account B reading Account A's basket: HTTP 200; returned basket ID=6
 
 I did not print bearer tokens or basket contents. This manual result answered an access-control question that the unauthenticated ZAP run did not cover.
 
-### 6.3 I checked whether an unsigned JWT was accepted
+### 5.3 I checked whether an unsigned JWT was accepted
 
 I used a test account and sent a read-only basket request with an unsigned JWT (`alg: none`). The service returned HTTP 200 and a basket ID. This confirmed that the lab accepted an unsigned token for that protected read, recorded as **API-02** and linked to GitHub Issue #2. The broader consequences, such as using the token to impersonate other users or perform writes, were not tested.
 
@@ -565,7 +563,7 @@ The preserved terminal result was `Unsigned-token request: HTTP 200; returned ba
 
 **Safety and evidence note:** The purpose was to demonstrate authentication validation in the training app. I did not test real accounts or a production service, and I did not use the test to modify basket state.
 
-### 6.4 I combined manual and tool results without treating them as duplicates
+### 5.4 I combined manual and tool results without treating them as duplicates
 
 I kept the source of each result clear. My two-account BOLA and unsigned-JWT checks were manual; ZAP's unauthenticated API scan did not reproduce them. ZAP raised the product-search SQL alert, and I used source review to confirm unsafe query construction. For CORS and configuration behavior, I compared ZAP's repeated observations with my manual response checks rather than counting the same behavior twice.
 
@@ -579,15 +577,15 @@ The API appendix and consolidated assessment distinguish:
 - **API-06:** malformed-request server errors observed by ZAP; no sensitive response body confirmed.
 - **API-07/API-08:** content-type and CSP observations recorded as lower-confidence or lower-impact follow-up items.
 
-## 7. Assessment handoff
+## 6. Assessment handoff
 
-### 7.1 I wrote findings for the teams who own remediation
+### 6.1 I wrote findings for the teams who own remediation
 
 My role in this lab was assessment and risk communication. The developers own source changes. The service owner supplies business context, assigns an accountable team, sets target dates, and decides whether any residual risk is accepted. DevSecOps makes the work actionable by preserving evidence, deduplicating results, explaining confidence, connecting findings to risk, and defining how a fix should be verified.
 
 The repository contains the consolidated assessment report, SCA/SAST/DAST/API appendices, risk register, detailed SCA/SAST CSV, and first-pass triage. Six API remediation issues were created in GitHub Issues #1–#6. They link back to evidence and provide proposed acceptance and verification expectations. An issue is a handoff; it is not proof that a developer has fixed the problem.
 
-### 7.2 I kept remediation and verification as future work
+### 6.2 I kept remediation and verification as future work
 
 This lab stage stops after documenting and assigning follow-up. No Juice Shop source fixes were made. In a real delivery pipeline, the development team would implement changes, and DevSecOps would help define focused regression tests, rerun the relevant scanner or manual check against the fixed build, capture the result, and update the assessment and risk register. A service owner would close or accept the risk based on evidence and business context.
 
