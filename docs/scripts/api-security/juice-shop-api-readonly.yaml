@@ -1,0 +1,59 @@
+openapi: 3.0.0
+info:
+  title: Juice Shop Read-only API Assessment
+  version: 1.0.0
+servers:
+  - url: http://host.docker.internal:3001
+paths:
+  /api/Challenges/:
+    get:
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Challenge data
+  /api/Quantitys/:
+    get:
+      responses:
+        '200':
+          description: Product quantity data
+  /api/Users:
+    get:
+      responses:
+        '200':
+          description: User list
+  /rest/admin/application-configuration:
+    get:
+      responses:
+        '200':
+          description: Application configuration
+  /rest/admin/application-version:
+    get:
+      responses:
+        '200':
+          description: Application version
+  /rest/languages:
+    get:
+      responses:
+        '200':
+          description: Available languages
+  /rest/products/search:
+    get:
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product search results
+  /rest/user/whoami:
+    get:
+      responses:
+        '200':
+          description: Current caller identity
