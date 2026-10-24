@@ -1,14 +1,14 @@
-# My Project 2A application and API security assessment journey
+# My Project 2A SCA, SAST and DAST Scanning application and API security assessment journey
 
 - **Core technologies:** Ubuntu in WSL, a hardened Ubuntu admin node, a hardened Ubuntu target node, Docker, OWASP Juice Shop, Snyk Open Source, Snyk Code, and OWASP ZAP.
 - **Problem addressed:** I needed to assess an intentionally vulnerable web application across its dependencies, source code, web behavior, and API authorization, then record findings for the teams responsible for remediation.
 - **Outcome:** I completed SCA and SAST scans, used ZAP baseline and AJAX Spider scans for DAST, and assessed API security with ZAP API Scan plus targeted manual checks. I documented individual findings, triage, and remediation ownership in this repository. I did not modify Juice Shop or remediate the findings; the next action belongs to the development/service owners.
 
-This walkthrough records how I carried out Project 2A, what I learned from each assessment stage, the problems that interrupted the work, and how I restored a reliable test path. It follows the same practical, first-person style as the Project 01B walkthrough. Commands are examples from the lab sequence; credentials, private keys, and passwords are intentionally omitted.
+This walkthrough records how I carried out Project 2A SCA, SAST and DAST Scanning, what I learned from each assessment stage, the problems that interrupted the work, and how I restored a reliable test path. It follows the same practical, first-person style as the Project 01B walkthrough. Commands are examples from the lab sequence; credentials, private keys, and passwords are intentionally omitted.
 
 ## The lab scenario
 
-Project 2A continued the hardened lab environment established in Project 1A. I reused the same three-node layout: my Windows workstation running Ubuntu in WSL, the admin node, and the target node. The servers retained the hardening and access controls from the earlier project. Project 2A added an application-security assessment to that foundation; it did not repeat the server-hardening work.
+Project 2A SCA, SAST and DAST Scanning continued the hardened lab environment established in Project 1A Linux Server Hardening. I reused the same three-node layout: my Windows workstation running Ubuntu in WSL, the admin node, and the target node. The servers retained the hardening and access controls from the earlier project. Project 2A SCA, SAST and DAST Scanning added an application-security assessment to that foundation; it did not repeat the server-hardening work.
 
 The target application was **OWASP Juice Shop**, a deliberately insecure web application created for security training. It includes examples of common web and API weaknesses and is suitable for learning how to discover, validate, classify, and report findings without testing a real service. Its vulnerabilities are intentional training challenges. A result in Juice Shop is evidence about this lab instance, not proof that another production application has the same defect.
 
@@ -40,7 +40,7 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 | [5. API Security](#5-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
 | [6. Assessment handoff](#6-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
 
-**Starting point:** The servers had been hardened in Project 1A and the Juice Shop source checkout was available in WSL. I used the lab accounts and SSH access already established for this environment. I did not include private key material or account passwords in this repository.
+**Starting point:** The servers had been hardened in Project 1A Linux Server Hardening and the Juice Shop source checkout was available in WSL. I used the lab accounts and SSH access already established for this environment. I did not include private key material or account passwords in this repository.
 
 ## 1. Prepare the code and tools
 
@@ -230,7 +230,7 @@ This lab stage stops after documenting and assigning follow-up. No Juice Shop so
 - Juice Shop is deliberately vulnerable, so the lab shows how to assess and communicate issues rather than how to claim production risk without context.
 - Finding a defect is one stage of DevSecOps. The process becomes useful when the evidence reaches the right engineering owner with a clear fix outcome and a way to verify it.
 
-## Related Project 2A records
+## Related Project 2A SCA, SAST and DAST Scanning records
 
 - [Consolidated assessment report](assessment-report-inventory.md)
 - [First-pass triage](triage-review.md)
