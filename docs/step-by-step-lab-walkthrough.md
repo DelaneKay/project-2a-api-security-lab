@@ -770,7 +770,7 @@ The API Scan was unauthenticated, so it did not test the two-account authorizati
 python3 docs/scripts/api-security/extract_zap_sql_alert.py
 ```
 
-ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge.
+ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge. I extracted the alert evidence with [`extract_zap_sql_alert.py`](scripts/api-security/extract_zap_sql_alert.py).
 
 To trace the SQL alert into the source, I reviewed the search route from **WSL**. `rg` was not installed, so I used the available `grep` and `sed` commands instead:
 
@@ -824,7 +824,7 @@ Source review gave me a test hypothesis, but I still needed a live response from
 
 The test demonstrated cross-account basket access. It did not inspect basket contents or attempt a state-changing operation, so the evidence is limited to the unauthorized object reference/read behavior observed.
 
-Before running the account check, my first WSL-through-tunnel script timed out. I moved the successful check to the target VM, where the container bridge returned HTTP 200. The original Python was entered directly in the target terminal; I saved it as `check_two_account_bola.py` in the portfolio scripts folder so it can be reviewed and reused. To run that saved copy on the target, I stage the file through the admin node:
+Before running the account check, my first WSL-through-tunnel script timed out. I moved the successful check to the target VM, where the container bridge returned HTTP 200. The original Python was entered directly in the target terminal; I saved it as [`check_two_account_bola.py`](scripts/api-security/check_two_account_bola.py) in the portfolio scripts folder so it can be reviewed and reused. To run that saved copy on the target, I stage the file through the admin node:
 
 ```bash
 # Admin node
@@ -869,7 +869,7 @@ I did not print bearer tokens or basket contents. This manual result answered an
 
 I used a test account and sent a read-only basket request with an unsigned JWT (`alg: none`). The service returned HTTP 200 and a basket ID. This confirmed that the lab accepted an unsigned token for that protected read, recorded as **API-02** and linked to GitHub Issue #2. The broader consequences, such as using the token to impersonate other users or perform writes, were not tested.
 
-I ran the unsigned-token check on the target VM after the basket test. The Python helper reconstructs the observed test: it prompts for Account A's email, creates a five-minute JWT with `alg: none` and the Account A identity, and requests only basket 6. It does not log in or print the email or token. I saved this as `check_unsigned_jwt.py` alongside the BOLA helper. The folder had already been staged through the admin node in Section 5.2:
+I ran the unsigned-token check on the target VM after the basket test. The Python helper reconstructs the observed test: it prompts for Account A's email, creates a five-minute JWT with `alg: none` and the Account A identity, and requests only basket 6. It does not log in or print the email or token. I saved this as [`check_unsigned_jwt.py`](scripts/api-security/check_unsigned_jwt.py) alongside the BOLA helper. The folder had already been staged through the admin node in Section 5.2:
 
 ```bash
 # Target server
@@ -883,7 +883,7 @@ The preserved terminal result was `Unsigned-token request: HTTP 200; returned ba
 
 ### 5.4 I inspected the remaining ZAP alerts and checked the search result safely
 
-After the account and token checks, I returned to the ZAP API report and reviewed the CORS, private-IP, timestamp, and content-type alerts. I also extracted the Server Error response code entries. The helpers print report excerpts only; they do not send requests:
+After the account and token checks, I returned to the ZAP API report and reviewed the CORS, private-IP, timestamp, and content-type alerts. I also extracted the Server Error response code entries. The linked helpers [`inspect_zap_api_alerts.py`](scripts/api-security/inspect_zap_api_alerts.py) and [`extract_zap_server_errors.py`](scripts/api-security/extract_zap_server_errors.py) print report excerpts only; they do not send requests:
 
 ```bash
 # WSL workstation; run from the portfolio checkout root.
@@ -893,7 +893,7 @@ python3 docs/scripts/api-security/extract_zap_server_errors.py
 
 The report listed 17 server-error responses. The available examples included invalid base paths and scanner-generated probes, without a sensitive response body or stack trace. I treated them as error-handling signals, not 17 confirmed vulnerabilities. The CORS and disclosure alerts also required context: the evidence did not establish authenticated cross-origin access or secret exposure.
 
-I then compared a normal product search with a single-quote search, using a Python helper that prints only status, content type, and response size. Both requests timed out while the port-3001 tunnel was unstable, so this retest provided no new SQL injection evidence:
+I then compared a normal product search with a single-quote search using [`compare_product_search_responses.py`](scripts/api-security/compare_product_search_responses.py), which prints only status, content type, and response size. Both requests timed out while the port-3001 tunnel was unstable, so this retest provided no new SQL injection evidence:
 
 ```bash
 # WSL workstation; run from the portfolio checkout root with the tunnel open.
