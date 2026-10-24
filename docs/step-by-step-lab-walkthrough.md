@@ -33,67 +33,18 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 | Stage | Sequence |
 | --- | --- |
-| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → prepare scanning tools → install Docker offline → verify and run Juice Shop on the target. |
-| [2. SCA](#2-sca--software-composition-analysis) | Scan dependencies → interpret advisory/path output → preserve individual findings. |
-| [3. SAST](#3-sast--static-application-security-testing) | Scan source → separate application code from tests/challenge examples → record findings. |
+| [1. Docker and target application](#1-install-docker-and-start-juice-shop) | Install Docker offline → verify the target → load and start Juice Shop. |
+| [2. SAST](#2-sast--static-application-security-testing) | Clone the matching source → prepare and authenticate Snyk → run Snyk Code → preserve source findings. |
+| [3. SCA](#3-sca--software-composition-analysis) | Resolve dependencies in WSL → run Snyk Open Source → preserve advisories and dependency paths. |
 | [4. DAST](#4-dast--dynamic-application-security-testing) | Baseline crawl → AJAX Spider → interpret scan limits. |
 | [5. API Security](#5-api-security) | Run ZAP API Scan → combine tool evidence with bounded two-account, token, and response checks. |
 | [6. Assessment handoff](#6-assessment-handoff) | Consolidate findings → triage → create developer issues → leave remediation to owners. |
 
-**Starting point:** The servers had been hardened in Project 1A Linux Server Hardening and the Juice Shop source checkout was available in WSL. I used the lab accounts and SSH access already established for this environment. I did not include private key material or account passwords in this repository.
+**Starting point:** The servers had been hardened in Project 1A Linux Server Hardening. The first task was to install Docker on the isolated target and start Juice Shop. I cloned the matching source release into WSL later, when I prepared the SAST and SCA scans. I used the lab accounts and SSH access already established for this environment; I did not include private keys or account passwords in this repository.
 
-## 1. Prepare the code and tools
+## 1. Install Docker and start Juice Shop
 
-### 1.1 I cloned the matching Juice Shop source
-
-The source folder was missing when I prepared for the code scans. In **WSL**, I cloned the official Juice Shop repository at `v20.3.0`, matching the application image version used in the lab. I used a shallow clone to avoid downloading the full Git history:
-
-```bash
-# WSL workstation
-cd ~/project-2a
-git clone --depth 1 --branch v20.3.0 https://github.com/juice-shop/juice-shop.git juice-shop-source
-```
-
-After cloning, I checked that the checkout and package manifest were present:
-
-```bash
-# WSL workstation
-cd ~/project-2a/juice-shop-source
-pwd
-ls -l package.json package-lock.json
-```
-
-The listing showed `package.json`, but no `package-lock.json`. That meant Snyk could inspect the dependencies resolved locally after installation, but I could not reproduce exact dependency versions from a lockfile committed with this checkout.
-
-### 1.2 I fixed missing Node.js and npm in WSL
-
-In WSL, my first version check returned `node: command not found` and `npm: command not found`. The source checkout was here, so I installed Node.js and npm in WSL:
-
-```bash
-# WSL workstation
-node --version
-npm --version
-sudo apt update
-sudo apt install nodejs npm
-node --version
-npm --version
-```
-
-### 1.3 I checked Snyk CLI access
-
-I installed the Snyk CLI in my WSL user directory, added it to `PATH`, checked the version, and authenticated:
-
-```bash
-# WSL workstation
-npm install --prefix "$HOME/.local" snyk
-export PATH="$HOME/.local/bin:$PATH"
-"$HOME/.local/bin/snyk" --version
-"$HOME/.local/bin/snyk" auth
-```
-
-Snyk authenticated successfully for the lab account. The authentication token stayed out of the walkthrough.
-
-### 1.4 I installed Docker on the isolated target before scanning
+### 1.1 I installed Docker on the isolated target before scanning
 
 Docker was not installed on the target, and its isolated network could not download the packages. I prepared the Ubuntu packages in WSL, transferred them through the admin node, and checked their checksums at each step. This was the first Docker installation; the later Docker failure happened separately in the lab.
 
@@ -217,7 +168,7 @@ ip route
 
 The Docker service check returned `active`. The route table showed the new `172.17.0.0/16` bridge alongside the lab route `192.168.77.0/24`, with no default route. The target still had no direct internet route.
 
-### 1.5 I transferred, verified, and started the first Juice Shop container
+### 1.2 I transferred, verified, and started the first Juice Shop container
 
 The target had no internet route, so I used the `bkimminich/juice-shop:latest` image already stored in WSL. I saved it to an archive for transfer. Before this, WSL reported image ID `sha256:2d370ec1…` and a repository digest for the image.
 
@@ -332,88 +283,130 @@ ssh -N -L 3000:192.168.77.10:3000 -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.5
 
 The browser opened Juice Shop at `http://localhost:3000`. At that point, the app was running on the target and reachable through the WSL tunnel. I then continued with the scans. The Docker outage and repeat image setup occurred later in the lab.
 
-## 2. SCA — Software Composition Analysis
 
-### 2.1 I checked the source checkout and tried the dependency scan
+## 2. SAST — Static Application Security Testing
 
-With Juice Shop running on the target server and reachable through the SSH tunnel, I moved to the source checkout in **WSL**. I did not run SCA against the live website: Snyk Open Source reads the project manifest and locally resolved dependencies, so it runs where that source checkout and its dependencies are available. The SCA commands below were run in WSL. The target server hosted the container for the later live DAST and API checks; its availability was not a prerequisite for this dependency scan.
+### 2.1 I cloned the matching Juice Shop source and prepared Snyk
 
-I had prepared Node.js, npm, and the Snyk CLI earlier in Section 1, before the first Docker installation. In WSL, I used `sudo apt update` and `sudo apt install nodejs npm` after `node` and `npm` were reported as missing. I then installed the Snyk CLI under my home directory with `npm install --prefix "$HOME/.local" snyk`, added `$HOME/.local/bin` to `PATH`, and authenticated with `snyk auth`. The full prerequisite command block is in Section 1 so the event order stays clear. The chat confirms the commands were missing and that I installed them; it does not include the package manager's full installation log, so I have not invented one here.
+After I confirmed Juice Shop was running on the target, I prepared the source checkout in **WSL** for code analysis. The source folder was missing when I checked it, so I cloned the official `v20.3.0` release to match the application version. I checked Git first; it reported version `2.53.0`.
 
-I first checked the project manifest and whether a lockfile was present. The checkout contained `package.json`, but no `package-lock.json`:
+```bash
+# WSL workstation
+git --version
+cd ~/project-2a
+git clone --depth 1 --branch v20.3.0 https://github.com/juice-shop/juice-shop.git juice-shop-source
+```
+
+I installed the Snyk CLI as a user executable in WSL. The first suggested system-wide location, `/usr/local/bin`, was owned by root, so I placed the binary under my home directory instead:
+
+```bash
+# WSL workstation
+ls -ld /usr/local/bin
+mkdir -p "$HOME/.local/bin"
+curl -fsSL https://static.snyk.io/cli/latest/snyk-linux -o "$HOME/.local/bin/snyk"
+chmod +x "$HOME/.local/bin/snyk"
+"$HOME/.local/bin/snyk" --version
+```
+
+The CLI reported version `1.1308.3`. I authenticated it before scanning. The browser OAuth callback returned “Not Found,” and checking the CLI showed that no API credential had been set. I inspected the available authentication options and switched to token-based authentication; the token was entered at the hidden terminal prompt and is not included here:
+
+```bash
+# WSL workstation
+"$HOME/.local/bin/snyk" auth
+"$HOME/.local/bin/snyk" config get api
+"$HOME/.local/bin/snyk" auth --help
+"$HOME/.local/bin/snyk" auth --auth-type=token
+```
+
+The final token-based flow authenticated successfully. I then confirmed that the checkout existed and enabled Snyk Code for the selected organization when the first scan reported the feature was disabled. Enabling it was a Snyk web-console action, not a shell command.
+
+### 2.2 I ran Snyk Code against the source
+
+SAST was **white-box** in this project because Snyk Code analyzed the source checkout. My first scan attempt returned a message that Snyk Code was disabled for the selected organization, so it produced no findings. I enabled Snyk Code for that organization in the Snyk web console, then repeated the same command from the repository. The console change was not a shell command.
+
+**First attempt (feature disabled; no scan findings were produced):**
+
+```bash
+# WSL workstation
+cd ~/project-2a/juice-shop-source
+"$HOME/.local/bin/snyk" code test
+```
+
+**Rerun after enabling Snyk Code:**
+
+```bash
+# WSL workstation
+cd ~/project-2a/juice-shop-source
+"$HOME/.local/bin/snyk" code test
+```
+The scan returned **306 findings**: **26 High**, **11 Medium**, and **269 Low**. Of the Low records, **240** were in `test/` paths. I preserved all individual records in [sast-individual-findings.md](sast-individual-findings.md). The path and challenge context mattered when I triaged them: Juice Shop deliberately includes vulnerable training examples, so a scanner result needed review before being treated as a production defect.
+
+**Checkpoint:** Snyk Code provided source-level findings and file paths. It did not demonstrate that every finding was reachable or exploitable in a deployed service. In the chat, I ran this SAST scan before the SCA dependency scan in Section 3.
+
+## 3. SCA — Software Composition Analysis
+
+### 3.1 I tried Snyk Open Source and checked the missing prerequisites
+
+After the SAST scan, I moved to SCA. Snyk Open Source compares project dependencies with known advisories. Although Juice Shop was running on the target, I ran this scan in **WSL** against the source checkout and its local dependency tree; it did not send requests to the target container. The target host was used for the later live DAST and API assessments.
+
+I first tried to scan the source dependencies. Snyk could not produce a result because the checkout had neither a supported lockfile nor an installed `node_modules` directory:
+
+```bash
+# WSL workstation
+cd ~/project-2a/juice-shop-source
+"$HOME/.local/bin/snyk" test
+```
+
+The terminal returned `SNYK-CLI-0000` and said **“Missing node_modules folder: we can't test without dependencies. Please run 'npm install' first.”** I checked the manifest and searched for lockfiles; the checkout contained `package.json`, but no `package-lock.json`, npm shrinkwrap, or Yarn lockfile:
 
 ```bash
 # WSL workstation
 cd ~/project-2a/juice-shop-source
 ls -l package.json package-lock.json
+find . -name package-lock.json -o -name npm-shrinkwrap.json -o -name yarn.lock
 ```
 
-I then tried Snyk Open Source. It stopped before scanning because the checkout did not yet have a `node_modules` directory:
+The first Node.js and npm version checks in WSL returned `command not found`. I initially tried the Ubuntu package suggestion for npm, then followed the Node.js 22 setup steps for the Juice Shop `v20.3.0` source. The full package manager installation output was not retained in the chat, so I report the commands and the subsequent successful scan rather than inventing installation logs:
 
 ```bash
 # WSL workstation
-"$HOME/.local/bin/snyk" test
+node --version
+npm --version
+sudo apt install npm
+sudo apt update
+sudo apt install -y curl
+curl -fsSL https://deb.nodesource.com/setup_22.x -o nodesource_setup.sh
+sudo -E bash nodesource_setup.sh
+sudo apt install -y nodejs
+node --version
+npm --version
 ```
 
-The terminal showed `ERROR Unspecified Error (SNYK-CLI-0000)`, followed by **“Missing node_modules folder: we can't test without dependencies. Please run 'npm install' first.”** This was a setup error, not a vulnerability result. The scan needed a locally resolved dependency tree before it could report package versions. This error was separate from the earlier missing-Node/npm problem: Node.js, npm, and the Snyk CLI were already installed; the missing item was Juice Shop's project dependencies.
+### 3.2 I installed dependencies without running package scripts and rescanned
 
-### 2.2 I installed the project dependencies and reran Snyk
-
-I followed Snyk's instruction and ran `npm install` in the WSL source checkout to populate `node_modules`. The conversation does not preserve the full npm installation output; the subsequent successful `snyk test --dev` is the evidence that the dependencies were available to scan:
+Once Node.js and npm were available, I installed the Juice Shop dependency tree without executing package lifecycle scripts. This created the local dependencies Snyk needed and avoided running the project’s `postinstall` build script during the assessment:
 
 ```bash
 # WSL workstation
 cd ~/project-2a/juice-shop-source
-npm install
+npm install --ignore-scripts
 ```
 
-I reran Snyk and included development dependencies so the assessment also covered packages used by build and test tooling:
+The chat does not preserve the full `npm install` output. After it completed, I reran Snyk with development dependencies included:
 
 ```bash
 # WSL workstation
+cd ~/project-2a/juice-shop-source
 "$HOME/.local/bin/snyk" test --dev
 ```
 
-Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The output included an upgrade recommendation for `@cyclonedx/cyclonedx-npm@4.2.1`, along with findings across direct and transitive dependencies. I recorded the individual advisories and dependency paths in [sca-individual-findings.md](sca-individual-findings.md), retaining repeated advisories where Snyk reported different dependency paths. The corresponding SCA triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
+Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The output included an upgrade recommendation for `@cyclonedx/cyclonedx-npm@4.2.1` and advisories across direct and transitive dependencies. I preserved all reported entries and dependency paths in [sca-individual-findings.md](sca-individual-findings.md), and the SCA triage rows in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
 
-### 2.3 I recorded what the scan did and did not establish
+Two Critical entries needed prompt owner review: arbitrary code injection associated with `marsdb@0.6.11`, listed as directly introduced, and directory traversal in `decompress@4.2.1`, reached through `download@8.0.0`. Other High entries included legacy JWT packages, lodash, and transitive/build dependencies. These paths are evidence for triage; scanner severity alone does not prove that vulnerable code is reachable in the deployed service.
 
-Two Critical entries needed prompt owner review: arbitrary code injection associated with `marsdb@0.6.11`, which Snyk listed as directly introduced, and directory traversal in `decompress@4.2.1`, reached through `download@8.0.0`. The scan also reported High findings in legacy JWT packages, lodash, and other dependencies. Those package paths are evidence for triage; they do not by themselves prove that vulnerable code is reachable in the deployed service.
+**Scope limit:** Because the checkout had no committed lockfile, npm resolved a local dependency tree for this scan. The result did not prove that the selected versions exactly matched the prebuilt container image on the target. I recorded the dependency recommendations for the development team and did not change Juice Shop's dependencies.
 
-The checkout had no existing lockfile when I began. Installing dependencies gave Snyk a resolved local tree to inspect, but the result did not establish an exact match with the container image or a previously built release. Because this was an assessment and handoff lab, I recorded the upgrade advice for the development team and did not change the application's dependencies.
-
-**Checkpoint:** SCA identified known advisories in the locally resolved dependency tree and preserved their severities and paths. It did not demonstrate exploitability, establish runtime reachability, or verify a fix. With the dependency findings recorded, I moved on to the separate source-code scan in Section 3.
-
-## 3. SAST — Static Application Security Testing
-
-### 3.1 I scanned first-party source separately
-
-SAST was white-box in this project because I had the Juice Shop source checkout. I could see the files and let Snyk Code analyze the code paths without sending requests to the running service. That source access let me review whether an alert came from application code, a test, or a training challenge. From the **WSL terminal**, I ran:
-
-```bash
-"$HOME/.local/bin/snyk" code test
-```
-
-The supplied Snyk Code output contained **306 individual records**: **26 High**, **11 Medium**, and **269 Low**. Of those, **240 Low** records were in `test/` paths. I preserved each individual record in [sast-individual-findings.md](sast-individual-findings.md) with the finding ID, title, severity, and path so reviewers can inspect the source context.
-
-### 3.2 I separated application paths from test fixtures and challenges
-
-The path is important evidence. The 26 High records were in application-source paths; 23 were in route, frontend, or library paths, and three were under `data/static/codefixes/`, which may be training examples. There were no High records under `test/` in the supplied results. Many Low records were in tests and should not automatically become production application tickets unless the test material is shipped or contains a real secret.
-
-Juice Shop intentionally includes vulnerable implementations to support training. That context does not make a scanner alert false by itself: the result still needs source review, challenge context, and an understanding of what is built and deployed. The triage file marks uncertain items as candidates pending that review.
-
-I also reviewed high-priority source locations from the **WSL terminal** to see whether findings were in application code, tests, or challenge material. `rg` was not installed in my environment, so I used these standard tools for the source lookup:
-
-```bash
-cd ~/project-2a/juice-shop-source
-grep -n -C 5 'criteria\|literal\|query' routes/search.ts
-sed -n '1,140p' routes/search.ts
-grep -RIn --include='*.ts' 'req\.query\|sequelize\.literal' routes lib
-```
-
-The source review found that `routes/search.ts` builds a SQL expression using the product-search query value. This helped connect the ZAP SQL alert to the source. Reading the code confirmed unsafe construction; it did not demonstrate data extraction or prove that every related scanner alert was exploitable.
-
-**Checkpoint:** SAST supplied code locations and risky patterns for developer review because this was a white-box scan with source access. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
+**Checkpoint:** SCA identified known advisories in the local dependency tree. It did not establish runtime reachability, demonstrate exploitability, or verify a fix. The actual chat sequence was SAST first, followed by SCA, which is why these sections now follow that order.
 
 ## 4. DAST — Dynamic Application Security Testing
 
@@ -629,6 +622,18 @@ PY
 
 
 ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge.
+
+To trace the SQL alert into the source, I reviewed the search route from **WSL**. `rg` was not installed, so I used the available `grep` and `sed` commands instead:
+
+```bash
+# WSL workstation
+cd ~/project-2a/juice-shop-source
+grep -n -C 5 'criteria\|literal\|query' routes/search.ts
+sed -n '1,140p' routes/search.ts
+grep -RIn --include='*.ts' 'req\.query\|sequelize\.literal' routes lib
+```
+
+This review found that `routes/search.ts` constructs a SQL expression using the product-search query value. It confirmed unsafe construction in source, but did not demonstrate data extraction.
 
 Other ZAP API observations included server-error responses, unexpected content types, missing CSP, wildcard CORS, timestamps, and a private IP value in configuration output. The available evidence did not establish sensitive stack-trace disclosure, authenticated cross-origin data access, or secret exposure. The API and DAST appendices preserve the counts and examples with their limits.
 
