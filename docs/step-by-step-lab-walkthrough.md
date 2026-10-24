@@ -131,7 +131,7 @@ cd ~/project-2a/staging/docker-packages
 sha256sum -c SHA256SUMS
 ```
 
-All eight package files reported `OK` on the admin node.
+I confirmed all eight package files reported `OK` on the admin node.
 
 Next, I created the same staging folder on the **target server**:
 
@@ -155,7 +155,7 @@ cd ~/project-2a/staging/docker-packages
 sha256sum -c SHA256SUMS
 ```
 
-All eight packages reported `OK` on the target too, confirming that the transfer had not changed them.
+I confirmed all eight packages reported `OK` on the target, so the transfer had not changed them.
 
 The first offline APT attempt hit a problem. On the **target server**, the `--no-download` simulation failed with `Unable to fetch some archives` and made no changes. A simulation using the local package paths showed the eight-package plan, but the real APT install still tried to fetch archives and failed. I kept all three target-side commands here to show what I tried and where it stopped:
 
@@ -179,7 +179,7 @@ cd ~/project-2a/staging/docker-packages
 sudo dpkg -i ./*.deb
 ```
 
-The installation completed: the output showed the Docker packages unpacked and configured, and systemd links created for the Docker service and socket.
+The installation completed successfully. I saw the Docker packages unpacked and configured, and systemd create links for the Docker service and socket.
 
 After the install, I checked Docker and the network from the **target server**:
 
@@ -189,7 +189,7 @@ systemctl is-active docker
 ip route
 ```
 
-The Docker service check returned `active`. The route table showed the new `172.17.0.0/16` bridge alongside the lab route `192.168.77.0/24`, with no default route. The target still had no direct internet route.
+I confirmed the Docker service was `active`. The route table showed the new `172.17.0.0/16` bridge alongside the lab route `192.168.77.0/24`, and no default route. That confirmed the target still had no direct internet route.
 
 ### 1.2 I transferred, verified, and started the first Juice Shop container
 
@@ -235,14 +235,14 @@ cd ~/project-2a/staging
 sha256sum -c juice-shop.tar.sha256
 ```
 
-The target also returned `juice-shop.tar: OK`. I loaded the verified image archive into Docker on the **target server**:
+I got `juice-shop.tar: OK` on the target as well, then loaded the verified archive into Docker there:
 
 ```bash
 # Target server
 sudo docker load --input ~/project-2a/staging/juice-shop.tar
 ```
 
-Docker reported `Loaded image: bkimminich/juice-shop:latest`. I had loaded the image, but had not started the application yet.
+Docker reported `Loaded image: bkimminich/juice-shop:latest`. At this point, I had loaded the image but had not started the application.
 
 Before starting Juice Shop, I checked the image on the **target server**. My first attempt from WSL failed because `sudo` needed a terminal. The target-side command was the same on retry; I allocated a terminal at both SSH hops so the password prompt could work:
 
@@ -304,22 +304,22 @@ Windows could not reach the target's isolated address directly. I opened an SSH 
 ssh -N -L 3000:192.168.77.10:3000 -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
 ```
 
-The browser opened Juice Shop at `http://localhost:3000`. At that point, the app was running on the target and reachable through the WSL tunnel. I then continued with the scans. The Docker outage and repeat image setup occurred later in the lab.
+The browser opened Juice Shop at `http://localhost:3000`. At that point, I had Juice Shop running on the target and could reach it through the WSL tunnel. The Docker outage and repeat image setup happened later in the lab. In [Section 2](#2-dast--dynamic-application-security-testing), I began assessing the running application with ZAP.
 
 
 ## 2. DAST — Dynamic Application Security Testing
 
 ### 2.1 I ran ZAP baseline and AJAX-enabled baseline scans
 
-I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which I investigated later before the API scan continued on port 3001. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
+I ran the first ZAP web scans while the original port-3000 path was responding. The preserved reports and crawler results show that I scanned `http://host.docker.internal:3000`. That forward later became unreliable, so I investigated the connection before continuing the API scan over port 3001. ZAP gave me a black-box DAST view: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
-The AJAX-enabled baseline discovered **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** in its separate run. These are baseline scan results; the later Spider API crawl and its 94 traditional Spider URLs and 91 AJAX Spider URLs are documented in Section 2.2.
+In a separate run, I got **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** from the AJAX-enabled baseline. I recorded these as baseline results; the later Spider API crawl, with 94 traditional Spider URLs and 91 AJAX Spider URLs, appears in Section 2.2.
 
-**Problem I encountered:** One AJAX-enabled baseline attempt hit connection refused while the SSH tunnel was down. After the port-3000 path responded again, I reran the scan successfully. The separate AJAX Spider API scope errors are recorded in Section 2.2. These setup errors were not application vulnerabilities.
+**Problem I encountered:** One AJAX-enabled baseline attempt hit connection refused while the SSH tunnel was down. After the port-3000 path responded again, I reran the scan successfully. The separate AJAX Spider API scope errors are recorded in Section 2.2. I treated these setup errors as connectivity problems, not application vulnerabilities.
 
-The scan was black-box: ZAP evaluated externally visible behavior and did not inspect source code. I ran these black-box scans before cloning the source for the later SAST and SCA stages. For API-specific probing, I describe ZAP's API Scan with the API Security results in Section 5.
+I treated these as black-box scans: ZAP evaluated behavior visible over HTTP without inspecting source code. I ran them before cloning the source for SAST and SCA. I cover ZAP's API-specific scan later, alongside the API Security results in Section 5.
 
-**Checkpoint:** DAST discovered reachable pages and response-level behaviors from the outside. The report distinguishes observed responses from source-confirmed issues and scanner signals that still need endpoint-specific validation.
+**Checkpoint:** With DAST, I mapped reachable pages and observed how the application responded from the outside. In my report, I separated those responses from issues I confirmed in source and from scanner signals that still need endpoint-specific validation.
 
 #### I prepared ZAP in WSL and checked the tunnel
 
@@ -332,11 +332,11 @@ docker pull zaproxy/zap-stable
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 http://localhost:3000/
 ```
 
-The image pull completed successfully, and the reachability check returned `HTTP 200`. I then ran ZAP against `http://host.docker.internal:3000`, which was the address used by the scanner container to reach the tunneled service.
+I pulled the image successfully, and my reachability check returned `HTTP 200`. I then ran ZAP against `http://host.docker.internal:3000`, the address the scanner container used to reach the tunneled service.
 
 #### Commands I ran and the report-permission problem I fixed
 
-The chat preserves the baseline commands and the failure output. My first scan attempt could not save ZAP's automation plan: ZAP ran as its container user, whose default home `/home/zap` was not writable. Running ZAP as my WSL user fixed access to the report folder but left the default home unwritable. I then tried mounting a separate `zap-home` directory beneath the report mount; ZAP still could not write `/zap/wrk/home/zap.yaml`. Those attempts did not produce the saved HTML report.
+I kept the failed attempts and their error messages in this walkthrough so the setup problems and the eventual fix are clear. My first scan attempt could not save ZAP's automation plan: ZAP ran as its container user, whose default home `/home/zap` was not writable. Running ZAP as my WSL user fixed access to the report folder but left the default home unwritable. I then tried mounting a separate `zap-home` directory beneath the report mount; ZAP still could not write `/zap/wrk/home/zap.yaml`. Those attempts did not produce the saved HTML report.
 
 **Initial baseline attempt:**
 
@@ -372,7 +372,7 @@ docker run --rm -t \
   zap-baseline.py -t http://host.docker.internal:3000 -r juice-shop-baseline.html
 ```
 
-The successful fix was to make the WSL report directory writable and keep ZAP's temporary home in `/tmp`. The `chmod 777` was a temporary lab-folder permission change to let the container write its report; it was not a target-server hardening change. This run produced the saved 116-URL baseline report:
+I got the scan working by making the WSL report directory writable and keeping ZAP's temporary home in `/tmp`. I used `chmod 777` only as a temporary permission change on the lab report folder so the container could write its report; I did not change target-server hardening. This run produced the saved 116-URL baseline report:
 
 ```bash
 # WSL workstation
@@ -404,7 +404,7 @@ ls -lh ~/project-2a/zap-reports/juice-shop-ajax.html
 grep -o 'http[^"< ]*' ~/project-2a/zap-reports/juice-shop-ajax.html | sort -u | head -n 30
 ```
 
-The HTML report did not provide a complete URL inventory. I reran the AJAX-enabled baseline to save a JSON report as well as HTML. This was still a passive baseline scan; the JSON report was not a complete Spider URL export:
+I found that the HTML report did not provide a complete URL inventory, so I reran the AJAX-enabled baseline to save JSON as well as HTML. The scan remained passive, and I did not treat its JSON report as a complete Spider URL export:
 
 ```bash
 # WSL workstation
@@ -416,12 +416,12 @@ docker run --rm -t \
   -J juice-shop-ajax.json -r juice-shop-ajax.html
 ```
 
-A full-scan command using zap-full-scan.py was suggested once, but the preserved completed results are from zap-baseline.py, so I do not count the full scan as a completed assessment.
-The ZAP container must resolve host.docker.internal to the WSL host and reach the forwarded Juice Shop port 3000. If it cannot, I check scanner-to-target connectivity before treating the output as a scan result. The target remains the isolated lab instance.
+Someone suggested `zap-full-scan.py`, but I did not complete that scan. I report only the completed `zap-baseline.py` results as evidence.
+For ZAP to scan through the tunnel, I needed its container to resolve `host.docker.internal` to WSL and reach forwarded port 3000. When that path failed, I checked scanner-to-target connectivity before treating any output as a scan result. All scans targeted my isolated lab instance.
 
 ### 2.2 I used the ZAP API to compare the two crawlers
 
-I wanted to know whether the traditional Spider had reached the application's JavaScript-loaded API routes. After the baseline scans, I started a temporary ZAP daemon in WSL and queried its Spider API. The chat retains the server-start command and the traditional Spider calls. It also retains the first AJAX request with inScope=true, which produced the error "The starting URI is not in scope", followed by a retry with inScope=false that returned Internal Error. The eventual AJAX result list contained 91 URLs, but the exact successful request sequence was not retained. I record that limitation instead of attributing the 91-URL result to a command whose success is not evidenced.
+I wanted to see whether the traditional Spider had found the application's JavaScript-loaded API routes. After the baseline scans, I started a temporary ZAP daemon in WSL and queried its Spider API. I retained the daemon command, traditional Spider calls, and the first failed AJAX request (`inScope=true`, which returned “The starting URI is not in scope”). My retry with `inScope=false` returned an internal error. The eventual AJAX result list contained 91 URLs, but I did not retain the successful scan-start parameters. I have kept that limitation clear instead of attributing the result to a command I cannot verify.
 
 I started ZAP with its API bound to WSL localhost and with API key checks disabled for this temporary lab daemon:
 
@@ -448,7 +448,7 @@ docker port zap-crawl-api 8090/tcp
 curl -sS http://127.0.0.1:8090/JSON/core/view/version/
 ```
 
-I started the traditional Spider, checked it until it reached 100%, and retrieved its URL list. The transcript used scan ID 0:
+I started the traditional Spider, checked it until it reached 100%, and retrieved its URL list. My recorded requests used scan ID 0:
 
 ```bash
 # WSL workstation
@@ -463,7 +463,7 @@ curl -sS --get 'http://127.0.0.1:8090/JSON/spider/view/results/' \
   -o ~/project-2a/zap-reports/spider-results.json
 ```
 
-The traditional crawl returned 94 URLs and no /api/ paths. My first AJAX request restricted the crawl to ZAP's existing scope. Juice Shop had not been added to scope, so this attempt did not crawl the site:
+I got 94 URLs from the traditional crawl, but none had `/api/` paths. My first AJAX request restricted the crawl to ZAP's existing scope. Since I had not added Juice Shop to scope, that attempt did not crawl the site:
 
 ```bash
 # WSL workstation
@@ -475,7 +475,7 @@ curl -sS http://127.0.0.1:8090/JSON/ajaxSpider/view/status/
 docker logs --tail 80 zap-crawl-api
 ```
 
-The log reported "The starting URI is not in scope". I retried with inScope=false; ZAP then returned Internal Error, so I inspected the logs rather than treating that attempt as a completed crawl:
+I saw “The starting URI is not in scope” in the log. I retried with `inScope=false`, but ZAP returned an internal error. I checked the logs and did not count that attempt as a completed crawl:
 
 ```bash
 # WSL workstation
@@ -486,7 +486,7 @@ curl -sS --get 'http://127.0.0.1:8090/JSON/ajaxSpider/action/scan/' \
 docker logs --tail 80 zap-crawl-api
 ```
 
-After the successful AJAX crawl stopped, I saved the result list. The chat preserves these retrieval commands and the resulting 91-URL list, but not the exact successful scan-start parameters:
+After the AJAX crawl stopped, I saved its result list. I retained the retrieval commands and the resulting 91-URL list, but not the exact parameters from the successful scan start:
 
 ```bash
 # WSL workstation
@@ -495,7 +495,7 @@ curl -sS 'http://127.0.0.1:8090/JSON/ajaxSpider/view/results/' \
   -o ~/project-2a/zap-reports/ajax-spider-results.json
 python3 -c 'import json; p="/home/devsecops/project-2a/zap-reports/ajax-spider-results.json"; r=json.load(open(p)).get("results", []); print(f"AJAX Spider URLs: {len(r)}"); print("\n".join(map(str, r[:20])))'
 ```
-I counted the exact URL strings and checked how many paths included `/api/`. The comparison helper reads both saved Spider result files and reports the counts; matching query strings exactly is why changing Socket.IO values can appear as additional entries:
+I counted the exact URL strings and checked how many paths included `/api/` with a helper that reads both saved Spider result files. Because it compares query strings exactly, changing Socket.IO values can show up as additional entries:
 
 ```bash
 # WSL workstation; run from the portfolio checkout root.
@@ -518,7 +518,7 @@ I recorded the `200 OK` as an observation, not a confirmed vulnerability. I save
 # WSL workstation; run from the portfolio checkout root.
 python3 docs/scripts/api-security/inspect_application_configuration.py
 ```
-The output had one top-level property, `config`, and no property names matching those terms. The same helper then listed the nested configuration paths without printing their values.
+I found one top-level property, `config`, and no property names matching the secret-related terms. The helper then listed the nested configuration paths without printing their values.
 
 The fields described frontend configuration, product data, and server settings. One was a Google OAuth `clientId`, an identifier rather than a secret. The name filter was only a first-pass check: it could not establish that every value was safe. Based on the paths and reviewed output, I treated this as public UI configuration and did not confirm sensitive-data exposure.
 
@@ -530,7 +530,7 @@ curl -sS -D - --max-time 10 -o /dev/null http://localhost:3000/rest/admin/applic
 curl -sS --max-time 10 http://localhost:3000/rest/admin/application-version
 ```
 
-It returned `{"version":"20.3.0"}` without authentication. I recorded this as low-sensitivity version metadata, not an authorization flaw.
+I received `{"version":"20.3.0"}` without authentication. I recorded it as low-sensitivity version metadata, not an authorization flaw.
 
 I then requested the discovered Score Board challenge record. This was a read-only query; `%20` encodes the space in the challenge name:
 
@@ -539,7 +539,7 @@ I then requested the discovered Score Board challenge record. This was a read-on
 curl -sS --max-time 10 'http://localhost:3000/api/Challenges/?name=Score%20Board'
 ```
 
-The response contained challenge catalog fields such as name, category, description, difficulty, and `solved: false`. Those fields support the Juice Shop interface and did not confirm an API vulnerability. The AJAX results also contained “challenge solved” events for two challenges, but the results alone did not show that the Spider caused those state changes.
+I saw challenge catalog fields such as name, category, description, difficulty, and `solved: false`. These fields support the Juice Shop interface, so they did not confirm an API vulnerability. The AJAX results also contained “challenge solved” events for two challenges, but I could not tell from those results alone whether the Spider caused the state changes.
 
 Finally, I checked the response's CORS headers using a test origin. This request also did not modify application data:
 
@@ -550,7 +550,7 @@ curl -sS -D - --max-time 10 -o /dev/null \
   'http://localhost:3000/api/Challenges/?name=Score%20Board'
 ```
 
-I recorded these unauthenticated checks as initial triage observations. Later, in Section 5, I ran the API-focused ZAP scan and separate authenticated checks; those addressed broader route coverage and authorization questions.
+I recorded these unauthenticated requests as initial triage observations. They gave me a starting point for the later API work. I then moved from live application testing to source analysis in [Section 3](#3-sast--static-application-security-testing). I returned to API-specific testing later in [Section 5](#5-api-security), using ZAP API Scan and authenticated checks to investigate authorization questions.
 
 
 ## 3. SAST — Static Application Security Testing
@@ -587,7 +587,7 @@ The CLI reported version `1.1308.3`. I authenticated it before scanning. The bro
 "$HOME/.local/bin/snyk" auth --auth-type=token
 ```
 
-The final token-based flow authenticated successfully. I then confirmed that the checkout existed and enabled Snyk Code for the selected organization when the first scan reported the feature was disabled. Enabling it was a Snyk web-console action, not a shell command.
+The token-based flow authenticated successfully. I confirmed the checkout was ready, then enabled Snyk Code for the selected organization after my first scan reported that the feature was disabled. I made that change in the Snyk web console, not in a shell.
 
 ### 3.2 I ran Snyk Code against the source
 
@@ -608,9 +608,9 @@ cd ~/project-2a/juice-shop-source
 cd ~/project-2a/juice-shop-source
 "$HOME/.local/bin/snyk" code test
 ```
-The scan returned **306 findings**: **26 High**, **11 Medium**, and **269 Low**. Of the Low records, **240** were in `test/` paths. I preserved all individual records in [sast-individual-findings.md](sast-individual-findings.md). The path and challenge context mattered when I triaged them: Juice Shop deliberately includes vulnerable training examples, so a scanner result needed review before being treated as a production defect.
+Snyk Code returned **306 findings**: **26 High**, **11 Medium**, and **269 Low**. I found **240** of the Low records in `test/` paths. I preserved every record in [sast-individual-findings.md](sast-individual-findings.md), then considered file path and challenge context during triage. Because Juice Shop includes intentionally vulnerable training examples, I reviewed each result before treating it as a production defect.
 
-**Checkpoint:** Snyk Code provided source-level findings and file paths. It did not demonstrate that every finding was reachable or exploitable in a deployed service. In the chat, this SAST scan followed the initial DAST scans and came before the SCA dependency scan in Section 4.
+**Checkpoint:** Snyk Code gave me source-level findings and file paths, but it did not show that every finding was reachable or exploitable in a deployed service. With the source review complete, I moved to dependency risk in [Section 4](#4-sca--software-composition-analysis).
 
 ## 4. SCA — Software Composition Analysis
 
@@ -635,7 +635,7 @@ ls -l package.json package-lock.json
 find . -name package-lock.json -o -name npm-shrinkwrap.json -o -name yarn.lock
 ```
 
-The first Node.js and npm version checks in WSL returned `command not found`. I initially tried the Ubuntu package suggestion for npm, then followed the Node.js 22 setup steps for the Juice Shop `v20.3.0` source. The full package manager installation output was not retained in the chat, so I report the commands and the subsequent successful scan rather than inventing installation logs:
+My first Node.js and npm checks in WSL returned `command not found`. I tried Ubuntu's npm package suggestion, then followed the Node.js 22 setup steps for the Juice Shop `v20.3.0` source. I did not retain the full package installation output, so I include the commands and the later successful scan without reconstructing logs I no longer have:
 
 ```bash
 # WSL workstation
@@ -661,7 +661,7 @@ cd ~/project-2a/juice-shop-source
 npm install --ignore-scripts
 ```
 
-The chat does not preserve the full `npm install` output. After it completed, I reran Snyk with development dependencies included:
+I did not retain the full `npm install` output. After the command completed, I reran Snyk with development dependencies included:
 
 ```bash
 # WSL workstation
@@ -669,13 +669,13 @@ cd ~/project-2a/juice-shop-source
 "$HOME/.local/bin/snyk" test --dev
 ```
 
-Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The output included an upgrade recommendation for `@cyclonedx/cyclonedx-npm@4.2.1` and advisories across direct and transitive dependencies. I preserved all reported entries and dependency paths in [sca-individual-findings.md](sca-individual-findings.md), and the SCA triage rows in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
+Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. I saw an upgrade recommendation for `@cyclonedx/cyclonedx-npm@4.2.1` alongside advisories in direct and transitive dependencies. I preserved every reported entry and dependency path in [sca-individual-findings.md](sca-individual-findings.md), with the SCA triage rows in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
 
-Two Critical entries needed prompt owner review: arbitrary code injection associated with `marsdb@0.6.11`, listed as directly introduced, and directory traversal in `decompress@4.2.1`, reached through `download@8.0.0`. Other High entries included legacy JWT packages, lodash, and transitive/build dependencies. These paths are evidence for triage; scanner severity alone does not prove that vulnerable code is reachable in the deployed service.
+I flagged two Critical entries for prompt owner review: arbitrary code injection associated with directly introduced `marsdb@0.6.11`, and directory traversal in `decompress@4.2.1`, reached through `download@8.0.0`. I also found High entries involving legacy JWT packages, lodash, and transitive or build dependencies. I treated these dependency paths as triage evidence; severity alone does not show whether the vulnerable code is reachable in the deployed service.
 
 **Scope limit:** Because the checkout had no committed lockfile, npm resolved a local dependency tree for this scan. The result did not prove that the selected versions exactly matched the prebuilt container image on the target. I recorded the dependency recommendations for the development team and did not change Juice Shop's dependencies.
 
-**Checkpoint:** SCA identified known advisories in the local dependency tree. It did not establish runtime reachability, demonstrate exploitability, or verify a fix. SCA followed SAST in the chat; the earlier DAST scans are documented in Section 2.
+**Checkpoint:** SCA identified known advisories in the local dependency tree, but it did not establish runtime reachability, prove exploitability, or verify a fix. I had now assessed the application source and dependencies. Next, I returned to the running service to assess API-specific behavior in [Section 5](#5-api-security).
 
 ## 5. API Security
 
@@ -683,9 +683,9 @@ I used two methods to assess API security. ZAP API Scan discovered routes and se
 
 ### 5.1 I ran the ZAP API Scan and established the API surface
 
-The AJAX Spider and API Scan surfaced routes including challenge and quantity endpoints, product search, languages, application version/configuration, and user-related routes. The API Scan was unauthenticated and covered the imported API definition plus scanner-generated requests. Its recorded counts and alert summary follow the scan command below.
+I used the AJAX Spider results to select routes for the API Scan, including challenge and quantity endpoints, product search, languages, application version and configuration, and user-related routes. I ran the API Scan without authentication against the imported definition, and ZAP added scanner-generated requests. I recorded its counts and alert summary after the scan command.
 
-I used ZAP's API Scan with an OpenAPI definition containing **eight GET-only routes** discovered in the AJAX results. I left `/rest/continue-code` out because it could expose challenge state. The chat preserves the exact definition and scan command below. I also saved the same definition as [`juice-shop-api-readonly.yaml`](scripts/api-security/juice-shop-api-readonly.yaml) in the helper folder for reuse.
+I used ZAP's API Scan with an OpenAPI definition containing **eight GET-only routes** discovered in the AJAX results. I left `/rest/continue-code` out because it could expose challenge state. I include the exact definition and scan command below. I also saved the same definition as [`juice-shop-api-readonly.yaml`](scripts/api-security/juice-shop-api-readonly.yaml) in the helper folder for reuse.
 
 ```bash
 # WSL workstation; the Juice Shop SSH tunnel on port 3001 stays open in another terminal.
@@ -763,7 +763,7 @@ docker run --rm -t \
   zap-api-scan.py -t /zap/wrk/juice-shop-api-readonly.yaml -f openapi -r juice-shop-api-active.html
 ```
 
-The API Scan was unauthenticated, so it did not test the two-account authorization case below. I ran the command above with the eight-route definition; the resulting report said **16 imported URLs**, **53 total URLs**, **108 PASS checks**, **0 FAIL alerts**, and **7 warning types**, and listed **37 GET endpoints**. These counts are the scan output, while the OpenAPI file shows the input I supplied. The scan follows ZAP's [API Scan documentation](https://www.zaproxy.org/docs/docker/api-scan/). I saved the Python report helpers under [`scripts/api-security/`](scripts/api-security/README.md). They read the saved HTML report and print bounded evidence excerpts; they do not send additional requests.
+Because I ran the API Scan without credentials, it could not test the two-account authorization case I describe below. With the eight-route definition, I got a report showing **16 imported URLs**, **53 total URLs**, **108 PASS checks**, **0 FAIL alerts**, and **7 warning types**; ZAP also listed **37 GET endpoints**. These counts are the scan output, while the OpenAPI file shows the input I supplied. I followed ZAP's [API Scan documentation](https://www.zaproxy.org/docs/docker/api-scan/). I saved the Python report helpers under [`scripts/api-security/`](scripts/api-security/README.md). They read the saved HTML report and print bounded evidence excerpts; they do not send additional requests.
 
 ```bash
 # WSL workstation; run from the portfolio checkout root.
@@ -784,7 +784,7 @@ grep -RIn --include='*.ts' 'req\.query\|sequelize\.literal' routes lib
 
 This review found that `routes/search.ts` constructs a SQL expression using the product-search query value. It confirmed unsafe construction in source, but did not demonstrate data extraction.
 
-I then inspected selected responses and kept tool evidence separate from manual evidence. A route returning `200` is not automatically a vulnerability: the response data and intended access policy matter.
+I kept the tool results separate from my manual observations as I reviewed selected responses. A `200` response alone did not tell me whether a route was vulnerable; I also had to consider the returned data and the intended access policy.
 
 Once the port-3001 tunnel returned HTTP 200, I checked selected API responses from **WSL**. I used read-only GET requests to compare status codes, headers, and response fields with ZAP's observations:
 
@@ -804,13 +804,13 @@ curl -sS -D - -o /dev/null --max-time 10 \
   -H 'Origin: https://other-origin.example' "$BASE/api/Quantitys/"
 ```
 
-I recorded HTTP status, selected response headers, and the body where available. I reviewed the application-configuration response for the disclosed IP/timestamp values and common secret-like property names; no secret was confirmed. `/api/Users` returned `401` anonymously. These requests do not change application state.
+I recorded each HTTP status, selected headers, and response body where available. In the application-configuration response, I reviewed the IP and timestamp values and checked for common secret-like property names; I did not confirm a secret. My anonymous request to `/api/Users` returned `401`. These requests did not change application state.
 
-For example, the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. This was recorded as a potential business-data exposure for an owner to assess, because the evidence did not define whether the lab intended those values to be public. The anonymous `/api/Users` request returned `401`, which was positive evidence that anonymous access was denied on that route.
+I found that the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. I recorded this as a potential business-data exposure for the service owner to assess, since my evidence did not establish whether the lab intended these values to be public. My anonymous `/api/Users` request returned `401`, showing that this route denied anonymous access.
 
 ### 5.2 I tested cross-account basket authorization
 
-The automated API scan was unauthenticated, so it could not establish cross-account object authorization. Before sending a live request, I examined the basket route and its tests in the source checkout. The saved source output showed `GET /rest/basket/:id`, a basket lookup by the requested ID, and tests for cross-user access and forged JWTs. I use these commands to revisit those lines from the **WSL terminal**; the exact original source-search command was not retained:
+Because I ran ZAP without authentication, its API scan could not establish cross-account object authorization. Before sending a live request, I examined the basket route and its tests in the source checkout. My saved source output showed `GET /rest/basket/:id`, a basket lookup by the requested ID, and tests for cross-user access and forged JWTs. I use the following commands from the **WSL terminal** to revisit those lines; I did not retain the exact original source-search command:
 
 ```bash
 # WSL workstation
@@ -822,7 +822,7 @@ sed -n '40,125p' test/api/basket.test.ts
 
 Source review gave me a test hypothesis, but I still needed a live response from the running container. I used Account A and Account B, recorded each account's own basket ID, then issued read-only requests for the other account's basket. The output showed HTTP 200 in both directions and returned the other account's basket ID. This confirmed a lab Broken Object Level Authorization (BOLA) issue, recorded as **API-01** and linked to GitHub Issue #1.
 
-The test demonstrated cross-account basket access. It did not inspect basket contents or attempt a state-changing operation, so the evidence is limited to the unauthorized object reference/read behavior observed.
+I limited the test to checking cross-account basket access. I did not inspect basket contents or try a state-changing operation, so my evidence covers only the unauthorized object reference and read behavior I observed.
 
 Before running the account check, my first WSL-through-tunnel script timed out. I moved the successful check to the target VM, where the container bridge returned HTTP 200. The original Python was entered directly in the target terminal; I saved it as [`check_two_account_bola.py`](scripts/api-security/check_two_account_bola.py) in the portfolio scripts folder so it can be reviewed and reused. To run that saved copy on the target, I stage the file through the admin node:
 
@@ -854,7 +854,7 @@ CONTAINER_IP="$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IP
 python3 ~/project-2a/scripts/api-security/check_two_account_bola.py "http://${CONTAINER_IP}:3000"
 ```
 
-The preserved terminal result was:
+My saved terminal output was:
 
 ```text
 Account A reading its own basket: HTTP 200; returned basket ID=6
@@ -877,7 +877,7 @@ CONTAINER_IP="$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IP
 python3 ~/project-2a/scripts/api-security/check_unsigned_jwt.py "http://${CONTAINER_IP}:3000"
 ```
 
-The preserved terminal result was `Unsigned-token request: HTTP 200; returned basket ID=6`. I did not modify data.
+My saved terminal output showed `Unsigned-token request: HTTP 200; returned basket ID=6`. I did not modify data.
 
 **Safety and evidence note:** The purpose was to demonstrate authentication validation in the training app. I did not test real accounts or a production service, and I did not use the test to modify basket state.
 
@@ -891,7 +891,7 @@ python3 docs/scripts/api-security/inspect_zap_api_alerts.py
 python3 docs/scripts/api-security/extract_zap_server_errors.py
 ```
 
-The report listed 17 server-error responses. The available examples included invalid base paths and scanner-generated probes, without a sensitive response body or stack trace. I treated them as error-handling signals, not 17 confirmed vulnerabilities. The CORS and disclosure alerts also required context: the evidence did not establish authenticated cross-origin access or secret exposure.
+I found 17 server-error responses in the report. The examples available to me involved invalid base paths and scanner-generated probes; I did not see a sensitive response body or stack trace. I treated these as error-handling signals rather than 17 confirmed vulnerabilities. I also needed more context for the CORS and disclosure alerts because my evidence did not establish authenticated cross-origin access or secret exposure.
 
 I then compared a normal product search with a single-quote search using [`compare_product_search_responses.py`](scripts/api-security/compare_product_search_responses.py), which prints only status, content type, and response size. Both requests timed out while the port-3001 tunnel was unstable, so this retest provided no new SQL injection evidence:
 
@@ -904,7 +904,7 @@ python3 docs/scripts/api-security/compare_product_search_responses.py
 
 I kept the source of each result clear. My two-account BOLA and unsigned-JWT checks were manual; ZAP's unauthenticated API scan did not reproduce them. ZAP raised the product-search SQL alert, and I used source review to confirm unsafe query construction. For CORS and configuration behavior, I compared ZAP's repeated observations with my manual response checks rather than counting the same behavior twice.
 
-The API appendix and consolidated assessment distinguish:
+In the API appendix and consolidated assessment, I kept these results distinct:
 
 - **API-01:** confirmed cross-account basket read (manual, two accounts).
 - **API-02:** unsigned JWT accepted on a protected basket read (manual).
@@ -914,17 +914,19 @@ The API appendix and consolidated assessment distinguish:
 - **API-06:** malformed-request server errors observed by ZAP; no sensitive response body confirmed.
 - **API-07/API-08:** content-type and CSP observations recorded as lower-confidence or lower-impact follow-up items.
 
+With the API evidence recorded alongside the scan results, I brought the findings together for triage and owner handoff in [Section 6](#6-assessment-handoff).
+
 ## 6. Assessment handoff
 
 ### 6.1 I wrote findings for the teams who own remediation
 
-My role in this lab was assessment and risk communication. The developers own source changes. The service owner supplies business context, assigns an accountable team, sets target dates, and decides whether any residual risk is accepted. DevSecOps makes the work actionable by preserving evidence, deduplicating results, explaining confidence, connecting findings to risk, and defining how a fix should be verified.
+I focused my role in this lab on assessment and risk communication. I left source changes with the developers. I expect the service owner to provide business context, assign an accountable team, set target dates, and decide whether to accept any residual risk. As the DevSecOps practitioner, I made the handoff actionable by preserving evidence, deduplicating results, explaining confidence, connecting findings to risk, and defining how a fix should be verified.
 
-The repository contains the consolidated assessment report, SCA/SAST/DAST/API appendices, risk register, detailed SCA/SAST CSV, and first-pass triage. Six API remediation issues were created in GitHub Issues #1–#6. They link back to evidence and provide proposed acceptance and verification expectations. An issue is a handoff; it is not proof that a developer has fixed the problem.
+I organized the repository to include the consolidated assessment report, SCA/SAST/DAST/API appendices, risk register, detailed SCA/SAST CSV, and first-pass triage. I also created six API remediation issues in GitHub Issues #1–#6, each linking to evidence and setting out proposed acceptance and verification expectations. I treat an issue as a handoff, not proof that the fix is complete.
 
 ### 6.2 I kept remediation and verification as future work
 
-This lab stage stops after documenting and assigning follow-up. No Juice Shop source fixes were made. In a real delivery pipeline, the development team would implement changes, and DevSecOps would help define focused regression tests, rerun the relevant scanner or manual check against the fixed build, capture the result, and update the assessment and risk register. A service owner would close or accept the risk based on evidence and business context.
+I stopped this lab after documenting findings and assigning follow-up; I did not change Juice Shop source code. In a real delivery pipeline, developers would implement the fixes. I would support them by agreeing on focused regression tests, rerunning the relevant scanner or manual check against the fixed build, capturing the evidence, and updating the assessment and risk register. The service owner would then close the risk or formally accept what remains, based on the evidence and business context. In [What I learned](#what-i-learned), I reflect on what this assessment taught me about carrying findings from discovery to remediation ownership.
 
 ## What I learned
 
