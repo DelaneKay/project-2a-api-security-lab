@@ -33,7 +33,7 @@ The test path was deliberately kept within the lab network. I verified basic HTT
 
 | Stage | Sequence |
 | --- | --- |
-| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → check Node/npm and Snyk → install dependencies → install Docker on the target and verify its service and routes. |
+| [1. Prepare the code and tools](#1-prepare-the-code-and-tools) | Locate the project → prepare scanning tools → install Docker offline → verify and run Juice Shop on the target. |
 | [2. SCA](#2-sca--software-composition-analysis) | Scan dependencies → interpret advisory/path output → preserve individual findings. |
 | [3. SAST](#3-sast--static-application-security-testing) | Scan source → separate application code from tests/challenge examples → record findings. |
 | [4. DAST](#4-dast--dynamic-application-security-testing) | Baseline crawl → AJAX Spider → interpret scan limits. |
@@ -179,7 +179,90 @@ ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_targe
 ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
 ```
 
-The service returned `active`. The target route table showed Docker's `172.17.0.0/16` bridge and the original `192.168.77.0/24` lab route, with no default route. This confirmed that Docker had started without giving the isolated target an internet path. I stopped this stage here, just before saving and transferring the Juice Shop image.
+The service returned `active`. The target route table showed Docker's `172.17.0.0/16` bridge and the original `192.168.77.0/24` lab route, with no default route. This confirmed that Docker had started without giving the isolated target an internet path. That was the checkpoint before I moved the Juice Shop image onto the target.
+
+### 1.5 I transferred, verified, and started the first Juice Shop container
+
+The target still had no default route, so I used the `bkimminich/juice-shop:latest` image already cached in WSL. I saved it as an archive rather than trying to pull from Docker Hub on the isolated target. I had recorded the WSL image ID as `sha256:2d370ec1…` and its repository digest before this transfer.
+
+**I saved the image and made an archive checksum.** From WSL, I ran:
+
+```bash
+docker save --output ~/project-2a/staging/juice-shop.tar bkimminich/juice-shop:latest
+cd ~/project-2a/staging
+sha256sum juice-shop.tar > juice-shop.tar.sha256
+ls -lh juice-shop.tar juice-shop.tar.sha256
+```
+
+The archive was about **347 MB**. The checksum file let me verify that the same archive reached each VM. I copied both files to the admin VM and then to the target, checking the archive at each hop:
+
+```bash
+# WSL → admin VM; then verify on the admin VM.
+scp -i ~/.ssh/mds_admin_ed25519 juice-shop.tar juice-shop.tar.sha256 mdsadmin@192.168.56.101:~/project-2a/staging/
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'cd ~/project-2a/staging && sha256sum -c juice-shop.tar.sha256'
+
+# Admin VM → target VM; then verify on the target VM.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'scp -i ~/.ssh/mds_target_ed25519 ~/project-2a/staging/juice-shop.tar ~/project-2a/staging/juice-shop.tar.sha256 mdsadmin@192.168.77.10:~/project-2a/staging/'
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "cd ~/project-2a/staging && sha256sum -c juice-shop.tar.sha256"'
+```
+
+Both destination checks returned `juice-shop.tar: OK`. I then imported the verified archive into the **target's** Docker image store:
+
+```bash
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker load --input ~/project-2a/staging/juice-shop.tar"'
+```
+
+Docker reported `Loaded image: bkimminich/juice-shop:latest`. Loading the image did not start the application.
+
+**I investigated a mismatch before running it.** My first remote `docker image inspect` failed with `sudo: A terminal is required to authenticate`. I retried with `-t` at both SSH hops. The target then reported image ID `sha256:9a55bcd1…`, while WSL reported `sha256:2d370ec1…`. I paused instead of assuming the archive was the wrong file:
+
+```bash
+# Failed: no terminal for the target's sudo prompt.
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format '\''{{.Id}}'\'' bkimminich/juice-shop:latest"'
+
+# Corrected: allocate a terminal through both hops.
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format={{.Id}} bkimminich/juice-shop:latest"'
+docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDigests}}' bkimminich/juice-shop:latest
+```
+
+I checked the archive's manifest and config hash in WSL. The archive contained the `2d370ec1…` config ID, matching the WSL source image. I then compared the ordered root filesystem layer lists. My first layer-inspection command had an unquoted format expression and failed; `sha256sum` therefore hashed the error/empty output rather than valid layer data. I reran it with the format quoted:
+
+```bash
+# WSL: inspect the archive manifest and config blob.
+cd ~/project-2a/staging
+tar -xOf juice-shop.tar manifest.json
+tar -xOf juice-shop.tar blobs/sha256/2d370ec11ab40bc24b3516c042f7317a053c80f668e572538469d1fd7e91d7f8 | sha256sum
+
+# WSL: corrected layer-list fingerprint.
+docker image inspect --format '{{json .RootFS.Layers}}' bkimminich/juice-shop:latest | sha256sum
+
+# Target: layer-list fingerprint and platform.
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format '\''{{json .RootFS.Layers}}'\'' bkimminich/juice-shop:latest | sha256sum"'
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker image inspect --format '\''OS={{.Os}} ARCH={{.Architecture}} SIZE={{.Size}}'\'' bkimminich/juice-shop:latest"'
+```
+
+The config blob hashed to `2d370ec1…`; both layer-list checks returned `36fd80fb…`; and the target reported `OS=linux ARCH=amd64`. The image IDs still differed between Docker stores, so I recorded that distinction. The archive checksums and matching layer lists supported continuing with the isolated lab image.
+
+**I started Juice Shop only on the target's private interface.** From WSL, I used the two-hop SSH path to run the container with a restart policy and bind port 3000 to `192.168.77.10`:
+
+```bash
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker run -d --name juice-shop --restart unless-stopped -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest"'
+ssh -t -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -t -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 "sudo docker ps --filter name=juice-shop"'
+```
+
+The run returned container ID `5440dc6a…`. `docker ps` showed it **Up** with `192.168.77.10:3000->3000/tcp`. I then checked HTTP from the admin VM, which could reach the target's private network:
+
+```bash
+ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 5 http://192.168.77.10:3000/'
+```
+
+It returned `HTTP 200`. Windows could not open the isolated `192.168.77.10` address directly, so I opened an SSH tunnel from WSL through the admin VM and left that terminal running:
+
+```bash
+ssh -N -L 3000:192.168.77.10:3000 -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101
+```
+
+The browser then opened Juice Shop at `http://localhost:3000`. That was the working application checkpoint before I continued with the source and security scans. The later Docker outage and repeat image troubleshooting happened in a separate stage of this lab.
 
 ## 2. SCA — Software Composition Analysis
 
