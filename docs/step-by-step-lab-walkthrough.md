@@ -67,7 +67,7 @@ docker image ls
 docker image inspect --format '{{.Id}} {{json .RepoDigests}}' bkimminich/juice-shop:latest
 ```
 
-I found two running containers for my `learn-to-cloud-app` project. Their ports were bound to loopback, so they did not conflict with this lab and I left them running. I also found `bkimminich/juice-shop:latest` in the WSL image store and recorded its image ID and repository digest. WSL's Docker Desktop engine and the target's Docker engine were separate, so I still needed to install Docker on the target and transfer the cached image there.
+I found two running containers for `learn-to-cloud-app`. Their ports were bound to loopback, so they did not conflict with this lab and I left them running. I also found `bkimminich/juice-shop:latest` in the WSL image store and recorded its image ID and repository digest. WSL's Docker Desktop engine and the target's Docker engine were separate, so I still needed to install Docker on the target and transfer the cached image there.
 
 Docker was not installed on the target, and the target had no internet route for downloading packages. I prepared the Ubuntu packages in WSL, sent them through the admin node, and checked their checksums at each stage.
 
