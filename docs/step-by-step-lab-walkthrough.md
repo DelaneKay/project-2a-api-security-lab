@@ -121,81 +121,58 @@ It returned `active`. Docker can add a virtual bridge and routes, so I also chec
 ssh -i ~/.ssh/mds_admin_ed25519 mdsadmin@192.168.56.101 'ssh -i ~/.ssh/mds_target_ed25519 mdsadmin@192.168.77.10 ip route'
 ```
 
-I used that route check before loading the application image. Later, when HTTP requests timed out, I returned to the target's interface, Docker bridge, and forwarding rules in Section 4.1.
+I used that route check before loading the application image. The image and network commands follow in Section 1.5.
 
-**Checkpoint:** Node.js/npm and Snyk were ready in WSL, and Docker reported `active` on the target. I could scan the source and dependencies while preparing the containerized app for DAST.
+### 1.5 I loaded and checked Juice Shop on the target
 
-## 2. SCA — Software Composition Analysis
+After Docker reported `active`, I worked through getting the Juice Shop image onto the target. The commands below are the setup and troubleshooting I performed before the DAST section. I kept the WSL, admin, and target shells distinct because they have different Docker contexts and SSH keys.
 
-### 2.1 I scanned the resolved dependency tree
-
-I used SCA to compare the project's resolved packages with known vulnerability advisories. A vulnerable package is a useful lead, but its scanner severity alone does not tell me whether the affected code is included or reachable in the running application. After installing dependencies, I ran Snyk Open Source from the **WSL terminal**:
+I tried to pull the image directly on the lab server, but Docker Hub name resolution failed there. I then pulled the image into WSL. Starting it from WSL with the target server's private address also failed because Docker could not publish that remote address from the WSL Docker context. These are the pull and run commands I used while diagnosing that:
 
 ```bash
-"$HOME/.local/bin/snyk" test --dev
+# Target node — this pull failed because Docker Hub DNS resolution failed.
+sudo docker pull bkimminich/juice-shop:v20.3.0
+
+# WSL workstation: pull into the local Docker context.
+docker pull bkimminich/juice-shop:v20.3.0
+
+# This run failed: WSL could not publish the target node's address.
+sudo docker run -d --name juice-shop -p 192.168.77.10:3000:3000 bkimminich/juice-shop:v20.3.0
+
+# After pulling the image into WSL, save it to a tar file for transfer.
+docker save -o ~/project-2a/juice-shop-v20.3.0.tar bkimminich/juice-shop:v20.3.0
+scp -i ~/.ssh/mds_admin_ed25519 ~/project-2a/juice-shop-v20.3.0.tar mdsadmin@192.168.56.101:/tmp/juice-shop-v20.3.0.tar
 ```
 
-The `--dev` option included development dependencies. This widened coverage to build and test packages, so I needed to retain each dependency path and later distinguish likely runtime packages from tooling. Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The full individual records are in [sca-individual-findings.md](sca-individual-findings.md); the corresponding SCA/SAST triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
-
-### 2.2 I treated dependency paths as part of the evidence
-
-Two Critical entries stood out for follow-up:
-
-- `marsdb@0.6.11`, reported with an arbitrary code injection advisory and shown as a direct introduced dependency.
-- `decompress@4.2.1`, reported with a directory traversal advisory through `download@8.0.0`.
-
-The output also contained High findings in legacy JWT packages, lodash, and other transitive/build-related chains. I preserved the package, advisory, severity, and dependency path rather than collapsing different paths into one count. A developer or service owner would next establish whether each dependency is shipped, imported, reachable, and covered by a supported upgrade.
-
-**Problem and lesson:** The source checkout had no lockfile. Although `npm install` created a local dependency tree that Snyk could scan, this did not prove that the result exactly represented a previous build or the image running on the target. I recorded that limitation and kept dependency/runtime validation as a triage action instead of presenting the scan as an image SBOM.
-
-**Checkpoint:** SCA identified vulnerable package versions and dependency chains. It did not establish exploitability in the running app or complete remediation. Those require application/build context and a later rescan.
-
-## 3. SAST — Static Application Security Testing
-
-### 3.1 I scanned first-party source separately
-
-SAST was white-box in this project because I had the Juice Shop source checkout. I could see the files and let Snyk Code analyze the code paths without sending requests to the running service. That source access let me review whether an alert came from application code, a test, or a training challenge. From the **WSL terminal**, I ran:
+An initial load attempt on the **admin node** returned `docker: command not found` in that shell, so I could not confirm that the transferred tar was loaded there. The command I attempted was:
 
 ```bash
-"$HOME/.local/bin/snyk" code test
+# Admin node
+sudo docker load -i /tmp/juice-shop-v20.3.0.tar
 ```
 
-The supplied Snyk Code output contained **306 individual records**: **26 High**, **11 Medium**, and **269 Low**. Of those, **240 Low** records were in `test/` paths. I preserved each individual record in [sast-individual-findings.md](sast-individual-findings.md) with the finding ID, title, severity, and path so reviewers can inspect the source context.
-
-### 3.2 I separated application paths from test fixtures and challenges
-
-The path is important evidence. The 26 High records were in application-source paths; 23 were in route, frontend, or library paths, and three were under `data/static/codefixes/`, which may be training examples. There were no High records under `test/` in the supplied results. Many Low records were in tests and should not automatically become production application tickets unless the test material is shipped or contains a real secret.
-
-Juice Shop intentionally includes vulnerable implementations to support training. That context does not make a scanner alert false by itself: the result still needs source review, challenge context, and an understanding of what is built and deployed. The triage file marks uncertain items as candidates pending that review.
-
-I also reviewed high-priority source locations from the **WSL terminal** to see whether findings were in application code, tests, or challenge material. `rg` was not installed in my environment, so I used these standard tools for the source lookup:
+The different results were confusing because `docker ps` and `docker images` depend on which Docker daemon I am connected to. An empty result from WSL only meant there was no matching container in WSL's Docker context; it did not say what was running on the lab server. In a later server session, I checked the server's daemon directly:
 
 ```bash
-cd ~/project-2a/juice-shop-source
-grep -n -C 5 'criteria\|literal\|query' routes/search.ts
-sed -n '1,140p' routes/search.ts
-grep -RIn --include='*.ts' 'req\.query\|sequelize\.literal' routes lib
+# Target Docker host
+sudo docker images bkimminich/juice-shop
+sudo docker ps -a --filter name=juice-shop
 ```
 
-The source review found that `routes/search.ts` builds a SQL expression using the product-search query value. This helped connect the ZAP SQL alert to the source. Reading the code confirmed unsafe construction; it did not demonstrate data extraction or prove that every related scanner alert was exploitable.
+I found that a container named `juice-shop` was already running. I tried to start another instance, but the name conflict prevented it from creating a new container:
 
-**Checkpoint:** SAST supplied code locations and risky patterns for developer review because this was a white-box scan with source access. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
+```bash
+# Target Docker host; this failed because the name was already in use.
+sudo docker run -d --name juice-shop -p 192.168.77.10:3000:3000 bkimminich/juice-shop:latest
+```
 
-## 4. DAST — Dynamic Application Security Testing
-
-### 4.1 I restored a testable path to Juice Shop
-
-The first ZAP baseline had reached Juice Shop through local port 3000. Later requests returned timeouts and HTTP `000`, so I paused before treating any scan failure as an application result. I checked the local SSH port, then traced the request through the admin node, target host, Docker bridge, and container. A listening SSH process only proved that a local socket existed; it did not prove that the application at the other end was answering.
-
-On the **target node**, I first checked the private interface, running container, image tag, and published port:
+On the **target node**, I checked the private interface, running container, image tag, and published port:
 
 ```bash
 ip -br -4 addr
 sudo docker ps -a --filter name=juice-shop
 sudo docker inspect juice-shop --format 'Image={{.Config.Image}} State={{.State.Status}} PortBindings={{json .HostConfig.PortBindings}}'
 ```
-
-I found that Juice Shop was already running as `bkimminich/juice-shop:latest`, with TCP 3000 published only on the target's private lab interface. I had tried to transfer and start `v20.3.0`, but the container-name conflict prevented that. I did not replace the running instance, so the final checks were against the existing `latest` image; its exact version was not pinned.
 
 The binding kept the published port on the lab interface. Docker's separate network namespace isolated the application process from the host environment, while the earlier Linux hardening still protected host access. I also checked the host's firewall and Docker forwarding rules on the **target node**:
 
@@ -211,56 +188,6 @@ sudo iptables -L DOCKER-FORWARD -n -v
 ```
 
 UFW was inactive, and Docker had DNAT and forwarding rules for TCP 3000. The packet counters showed traffic reaching Docker's port-forwarding rules. I used those outputs to trace the route, then relied on an HTTP request from WSL as the end-to-end check.
-
-I first tried to pull the image directly on the lab server, but Docker Hub name resolution failed there. I then pulled the image into WSL. Starting it from WSL with the target server's private address also failed because Docker could not publish that remote address from the WSL Docker context. These are the pull and run commands I used while diagnosing that:
-
-```bash
-# Target node — this pull failed because Docker Hub DNS resolution failed.
-sudo docker pull bkimminich/juice-shop:v20.3.0
-
-# WSL workstation
-# Private addresses assigned to this lab.
-TARGET_IP='192.168.77.10'
-ADMIN_IP='192.168.56.101'
-ADMIN_USER='mdsadmin'
-
-# Pull into the WSL Docker context, then try to publish on the target address.
-docker pull bkimminich/juice-shop:v20.3.0
-sudo docker run -d --name juice-shop \
-  -p "$TARGET_IP:3000:3000" \
-  bkimminich/juice-shop:v20.3.0
-
-# After pulling the image into WSL, save it to a tar file for transfer.
-docker save -o ~/project-2a/juice-shop-v20.3.0.tar bkimminich/juice-shop:v20.3.0
-scp -i ~/.ssh/mds_admin_ed25519 \
-  ~/project-2a/juice-shop-v20.3.0.tar \
-  "$ADMIN_USER@$ADMIN_IP:/tmp/juice-shop-v20.3.0.tar"
-```
-
-An initial load attempt on the **admin node** returned `docker: command not found` in that shell, so I could not confirm that the transferred tar was loaded there. The command I attempted was:
-
-```bash
-# Admin node
-sudo docker load -i /tmp/juice-shop-v20.3.0.tar
-```
-
-This was confusing because `docker ps` and `docker images` depend on which Docker daemon I am connected to. An empty result from WSL only meant there was no matching container in WSL's Docker context; it did not say what was running on the lab server. In a later server session, I checked the server's daemon directly:
-
-```bash
-# Target Docker host
-sudo docker images bkimminich/juice-shop
-sudo docker ps -a --filter name=juice-shop
-```
-
-I found that a container named `juice-shop` was already running. I tried to start another instance, but the name conflict prevented it from creating a new container:
-
-```bash
-# Target Docker host; use its private lab address.
-TARGET_IP='192.168.77.10'
-sudo docker run -d --name juice-shop \
-  -p "$TARGET_IP:3000:3000" \
-  bkimminich/juice-shop:latest
-```
 
 I checked the existing container instead of assuming the image transfer had replaced it:
 
@@ -347,13 +274,72 @@ curl -sS -o /dev/null -w 'HTTP %{http_code}\n' \
   --max-time 10 http://localhost:3001/
 ```
 
-The curl returned HTTP 200. The `ss` listener check by itself was not enough; only the HTTP response confirmed end-to-end reachability. The earlier HTTP `000` and timeout results were network-path failures, not findings.
+The curl returned HTTP 200. The `ss` listener check by itself was not enough; only the HTTP response confirmed end-to-end reachability. The HTTP `000` and timeout results were network-path failures, not findings.
 
-That HTTP 200 was the reachability checkpoint for the later scans.
+That HTTP 200 was the reachability checkpoint before I moved to the scan results.
 
-### 4.2 I ran ZAP baseline and AJAX Spider scans
 
-I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which is why I traced the network path in 4.1 and used port 3001 for the later API scan. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
+## 2. SCA — Software Composition Analysis
+
+### 2.1 I scanned the resolved dependency tree
+
+I used SCA to compare the project's resolved packages with known vulnerability advisories. A vulnerable package is a useful lead, but its scanner severity alone does not tell me whether the affected code is included or reachable in the running application. After installing dependencies, I ran Snyk Open Source from the **WSL terminal**:
+
+```bash
+"$HOME/.local/bin/snyk" test --dev
+```
+
+The `--dev` option included development dependencies. This widened coverage to build and test packages, so I needed to retain each dependency path and later distinguish likely runtime packages from tooling. Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The full individual records are in [sca-individual-findings.md](sca-individual-findings.md); the corresponding SCA/SAST triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
+
+### 2.2 I treated dependency paths as part of the evidence
+
+Two Critical entries stood out for follow-up:
+
+- `marsdb@0.6.11`, reported with an arbitrary code injection advisory and shown as a direct introduced dependency.
+- `decompress@4.2.1`, reported with a directory traversal advisory through `download@8.0.0`.
+
+The output also contained High findings in legacy JWT packages, lodash, and other transitive/build-related chains. I preserved the package, advisory, severity, and dependency path rather than collapsing different paths into one count. A developer or service owner would next establish whether each dependency is shipped, imported, reachable, and covered by a supported upgrade.
+
+**Problem and lesson:** The source checkout had no lockfile. Although `npm install` created a local dependency tree that Snyk could scan, this did not prove that the result exactly represented a previous build or the image running on the target. I recorded that limitation and kept dependency/runtime validation as a triage action instead of presenting the scan as an image SBOM.
+
+**Checkpoint:** SCA identified vulnerable package versions and dependency chains. It did not establish exploitability in the running app or complete remediation. Those require application/build context and a later rescan.
+
+## 3. SAST — Static Application Security Testing
+
+### 3.1 I scanned first-party source separately
+
+SAST was white-box in this project because I had the Juice Shop source checkout. I could see the files and let Snyk Code analyze the code paths without sending requests to the running service. That source access let me review whether an alert came from application code, a test, or a training challenge. From the **WSL terminal**, I ran:
+
+```bash
+"$HOME/.local/bin/snyk" code test
+```
+
+The supplied Snyk Code output contained **306 individual records**: **26 High**, **11 Medium**, and **269 Low**. Of those, **240 Low** records were in `test/` paths. I preserved each individual record in [sast-individual-findings.md](sast-individual-findings.md) with the finding ID, title, severity, and path so reviewers can inspect the source context.
+
+### 3.2 I separated application paths from test fixtures and challenges
+
+The path is important evidence. The 26 High records were in application-source paths; 23 were in route, frontend, or library paths, and three were under `data/static/codefixes/`, which may be training examples. There were no High records under `test/` in the supplied results. Many Low records were in tests and should not automatically become production application tickets unless the test material is shipped or contains a real secret.
+
+Juice Shop intentionally includes vulnerable implementations to support training. That context does not make a scanner alert false by itself: the result still needs source review, challenge context, and an understanding of what is built and deployed. The triage file marks uncertain items as candidates pending that review.
+
+I also reviewed high-priority source locations from the **WSL terminal** to see whether findings were in application code, tests, or challenge material. `rg` was not installed in my environment, so I used these standard tools for the source lookup:
+
+```bash
+cd ~/project-2a/juice-shop-source
+grep -n -C 5 'criteria\|literal\|query' routes/search.ts
+sed -n '1,140p' routes/search.ts
+grep -RIn --include='*.ts' 'req\.query\|sequelize\.literal' routes lib
+```
+
+The source review found that `routes/search.ts` builds a SQL expression using the product-search query value. This helped connect the ZAP SQL alert to the source. Reading the code confirmed unsafe construction; it did not demonstrate data extraction or prove that every related scanner alert was exploitable.
+
+**Checkpoint:** SAST supplied code locations and risky patterns for developer review because this was a white-box scan with source access. No application source was changed during this assessment, and scanner output was not treated as proof that every record is exploitable in production.
+
+## 4. DAST — Dynamic Application Security Testing
+
+### 4.1 I ran ZAP baseline and AJAX Spider scans
+
+I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which is why I traced the network path in Section 1.5 and used port 3001 for the later API scan. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
 The AJAX-enabled baseline discovered **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** in its separate run. A direct Spider API crawl found 94 traditional Spider URLs and 91 AJAX Spider URLs. The AJAX crawl exposed API routes and client-loaded resources that the traditional crawl missed. These counts came from different runs/settings; I recorded them as crawl coverage rather than comparing them as vulnerability counts.
 
