@@ -8,7 +8,7 @@ I started this project with the same WSL workstation and hardened servers I had 
 
 ## The lab scenario
 
-I continued the lab from Project 1A Linux Server Hardening, reusing its three-node layout: my Windows workstation running Ubuntu in WSL, the admin node, and the target node. I kept the earlier host hardening in place and added application security testing on top of it.
+I continued the lab from Project 1A Linux Server Hardening, reusing its three-node layout: my Windows workstation running Ubuntu in WSL, the admin node, and the target node. I checked the current host and network state as I added application security testing; I did not assume that every earlier setting was still active.
 
 I used the previously hardened Ubuntu target node to host **OWASP Juice Shop**, a deliberately vulnerable web application built for security training. I ran the application in a Docker container, which kept its process and packages in a separate container environment while the Project 1A Linux Server Hardening controls remained on the host. I published the web port on the target's private lab interface and reached it through the lab network and SSH forwarding path. That kept the training application inside the lab network while giving me a running target for web and API assessment. Juice Shop's vulnerabilities are intentional; I used them to practise finding, validating, classifying, and handing off issues.
 
@@ -105,7 +105,7 @@ I used SCA to compare the project's resolved packages with known vulnerability a
 "$HOME/.local/bin/snyk" test --dev
 ```
 
-The `--dev` option included development dependencies. This widened coverage to build and test packages, so I needed to retain each dependency path and later distinguish likely runtime packages from tooling. Snyk reported **87 advisory/path entries**, including **2 Critical** and **36 High** entries. The full individual records are in [sca-individual-findings.md](sca-individual-findings.md); the corresponding SCA/SAST triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
+The `--dev` option included development dependencies. This widened coverage to build and test packages, so I needed to retain each dependency path and later distinguish likely runtime packages from tooling. Snyk reported **87 advisory/path entries**: **2 Critical, 36 High, 47 Medium, and 2 Low**. The full individual records are in [sca-individual-findings.md](sca-individual-findings.md); the corresponding SCA/SAST triage rows are in [risk-register-sca-sast.csv](risk-register-sca-sast.csv).
 
 ### 2.2 I treated dependency paths as part of the evidence
 
@@ -155,7 +155,7 @@ The source review found that `routes/search.ts` builds a SQL expression using th
 
 ### 4.1 I restored a testable path to Juice Shop
 
-Before I could run DAST, I needed Juice Shop to answer requests from WSL. During setup, I kept getting timeouts and HTTP `000`. I first checked the local SSH port, then traced the request through the container and target network. A listening SSH process only proved that a local socket existed; it did not prove that the application at the other end was answering.
+The first ZAP baseline had reached Juice Shop through local port 3000. Later requests returned timeouts and HTTP `000`, so I paused before treating any scan failure as an application result. I checked the local SSH port, then traced the request through the admin node, target host, Docker bridge, and container. A listening SSH process only proved that a local socket existed; it did not prove that the application at the other end was answering.
 
 On the **target node**, I first checked the private interface, running container, image tag, and published port:
 
@@ -172,12 +172,15 @@ The binding kept the published port on the lab interface. Docker's separate netw
 ```bash
 sudo ufw status verbose
 sudo iptables -t nat -S DOCKER
+sudo iptables -t nat -L DOCKER -n -v
 sudo iptables -S FORWARD
 sudo iptables -S DOCKER
+sudo iptables -L DOCKER -n -v
 sudo iptables -L DOCKER-USER -n -v
+sudo iptables -L DOCKER-FORWARD -n -v
 ```
 
-UFW was inactive, and Docker had DNAT and forwarding rules for TCP 3000. I used those outputs to trace the route, then relied on an HTTP request from WSL as the end-to-end check.
+UFW was inactive, and Docker had DNAT and forwarding rules for TCP 3000. The packet counters showed traffic reaching Docker's port-forwarding rules. I used those outputs to trace the route, then relied on an HTTP request from WSL as the end-to-end check.
 
 I first tried to pull the image directly on the lab server, but Docker Hub name resolution failed there. I then pulled the image into WSL. Starting it from WSL with the target server's private address also failed because Docker could not publish that remote address from the WSL Docker context. These are the pull and run commands I used while diagnosing that:
 
@@ -235,9 +238,10 @@ I checked the existing container instead of assuming the image transfer had repl
 # Target node
 sudo docker ps -a --filter name=juice-shop
 sudo docker inspect juice-shop --format 'Image={{.Config.Image}} State={{.State.Status}} PortBindings={{json .HostConfig.PortBindings}}'
+sudo docker logs --tail 80 juice-shop
 ```
 
-That showed the existing `juice-shop` container was up from `bkimminich/juice-shop:latest` with TCP 3000 mapped to the target's private interface. A container-local request and a Docker-bridge request both returned HTTP 200, so I narrowed the remaining failure to the client-to-target path. This Node-based command is a repeatable way to check the HTTP listener inside the Node.js application container:
+That showed the existing `juice-shop` container was up from `bkimminich/juice-shop:latest` with TCP 3000 mapped to the target's private interface. The logs showed application requests, including `Unexpected path` messages; those log entries did not explain the WSL timeout. A container-local request and a Docker-bridge request both returned HTTP 200, so I narrowed the remaining failure to the client-to-target path. This Node-based command is a repeatable way to check the HTTP listener inside the Node.js application container:
 
 ```bash
 # Target node: check the app in its own network namespace
@@ -249,15 +253,33 @@ curl -sS -o /dev/null -w 'Container-bridge HTTP %{http_code}\n' \
   --max-time 5 "http://$CONTAINER_IP:3000/"
 ```
 
+I also checked the target from the **admin node**. I had mistakenly tried to run my WSL SSH command again after I was already logged in as `mdsadmin`; that shell did not have my WSL private key and the SSH attempt returned `Permission denied (publickey)`. The useful test from inside the admin node was the direct HTTP request to the target's private interface:
+
+```bash
+# WSL workstation: enter the admin node using the key stored in WSL.
+ADMIN_IP='<ADMIN_NODE_IP>'
+ssh -i ~/.ssh/mds_admin_ed25519 "mdsadmin@$ADMIN_IP"
+
+# Admin node: request Juice Shop through the private lab network.
+TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
+curl -sS -o /dev/null -w 'Admin-to-target HTTP %{http_code}\n' \
+  --max-time 5 "http://$TARGET_IP:3000/"
+```
+
+The admin-to-target request returned HTTP 200. This separated a working target and lab network from the unreliable WSL forwarding path.
+
 I checked why the original local test still returned HTTP `000` by looking for processes using ports 3000 and 3001:
 
 ```bash
 # WSL workstation
 ss -ltnp 'sport = :3000'
 ss -ltnp 'sport = :3001'
+TARGET_IP='<TARGET_LAB_PRIVATE_IP>'
+curl -sS -o /dev/null -w 'WSL-to-target HTTP %{http_code}\n' \
+  --max-time 5 "http://$TARGET_IP:3000/"
 ```
 
-Port 3000 was already held by an SSH process, and a tunnel was also already listening on 3001 in another terminal. Trying to start a second tunnel on either port only produced “Address already in use.” This is the port-3000 command that failed:
+The direct WSL-to-target request timed out, while the admin-to-target request had returned HTTP 200. Port 3000 was already held by an SSH process, and a tunnel was also already listening on 3001 in another terminal. Trying to start a second tunnel on either port only produced “Address already in use.” This is the port-3000 command that failed:
 
 ```bash
 # WSL workstation — this failed because local port 3000 was already occupied.
@@ -287,6 +309,7 @@ In a second WSL terminal, I confirmed that the tunnel reached the app:
 # First, this request through the old port-3000 forward timed out.
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 \
   http://localhost:3000/
+curl -v --max-time 5 http://localhost:3000/ -o /dev/null
 
 # I then checked the existing port-3001 forward.
 ss -ltnp 'sport = :3001'
@@ -300,11 +323,11 @@ That HTTP 200 was the reachability checkpoint for the later scans.
 
 ### 4.2 I ran ZAP baseline and AJAX Spider scans
 
-With the target reachable, I used OWASP ZAP in a black-box DAST assessment: the scanner interacted with the live web application over HTTP and evaluated the pages and responses it could reach, without reading the source code. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
+I ran the first ZAP web scans while the original port-3000 path was responding. The target URL in those preserved reports and crawler results was `http://host.docker.internal:3000`. That forward later became unreliable, which is why I traced the network path in 4.1 and used port 3001 for the later API scan. ZAP performed a black-box DAST assessment: it interacted with the live application over HTTP without reading the source. The baseline run discovered 116 URLs and reported **0 FAIL alerts**, **3 warning types**, and **58 PASS checks**. The warning types included missing Content Security Policy, cross-domain configuration, and the informational modern-web-application classification.
 
-An AJAX-enabled baseline discovered 35 URLs in that run. A separate direct Spider API crawl found 94 traditional Spider URLs and 91 AJAX Spider URLs. The AJAX crawl exposed API routes and client-loaded resources that the traditional crawl missed. These counts came from different runs/settings; I recorded them as crawl coverage rather than comparing them as vulnerability counts.
+The AJAX-enabled baseline discovered **35 URLs**, **0 FAIL alerts**, **3 warning types**, and **58 PASS checks** in its separate run. A direct Spider API crawl found 94 traditional Spider URLs and 91 AJAX Spider URLs. The AJAX crawl exposed API routes and client-loaded resources that the traditional crawl missed. These counts came from different runs/settings; I recorded them as crawl coverage rather than comparing them as vulnerability counts.
 
-**Problem I encountered:** The first AJAX attempt timed out while the SSH tunnel was down. After restoring connectivity I ran the Spider API crawl separately. This helped distinguish a scan configuration/connectivity failure from an application response and prevented the timeout from being reported as a security issue.
+**Problems I encountered:** One AJAX attempt timed out while the SSH tunnel was down. A separate attempt reached ZAP but failed with `The starting URI is not in scope`. I inspected the ZAP container log and retried the crawl with the target URL and scope aligned. The later direct AJAX result contained 91 Juice Shop URLs. The exact scope correction was not retained in the terminal record, so the rerun command below leaves `inScope` unset. These setup errors were not application vulnerabilities.
 
 The scan was black-box: ZAP evaluated externally visible behavior and did not inspect source code. The SAST stage supplied the complementary white-box view of code paths. For API-specific probing, I describe ZAP's API Scan with the API Security results in the next section.
 
@@ -317,7 +340,7 @@ The exact ZAP CLI invocation and exported scan configuration from the original r
 ```bash
 cd ~/project-2a
 mkdir -p zap-reports
-ZAP_TARGET='http://host.docker.internal:3001'
+ZAP_TARGET='http://host.docker.internal:3000'
 
 # Passive baseline crawl
 docker run --rm -t \
@@ -338,11 +361,21 @@ The ZAP container must resolve `host.docker.internal` to the WSL host and reach 
 
 #### I used the ZAP API to compare the two crawlers
 
-I wanted to know whether the traditional Spider had reached the application's JavaScript-loaded API routes. I checked ZAP's Spider result list, then its AJAX Spider result list. The retained outputs show **94** traditional URLs and **91** AJAX URLs; the traditional list had no `/api/` path. These are the API requests I use to repeat that comparison with an already running ZAP API. The exact original API call sequence was not saved, so I do not present these commands as the source of the recorded counts:
+I wanted to know whether the traditional Spider had reached the application's JavaScript-loaded API routes. I checked ZAP's Spider result list, then its AJAX Spider result list. The retained outputs show **94** traditional URLs and **91** AJAX URLs; the traditional list had no `/api/` path. The ZAP container was named `zap-crawl-api`; its log showed it listening on port **8090**, spidering `host.docker.internal:3000`, and reporting the scope error. These are the relevant checks and an API command sequence for repeating the comparison. The exact original API call sequence was not saved, so I do not present these commands as the source of the recorded counts:
+
+```text
+ZAP is now listening on 0.0.0.0:8090
+Starting spidering scan on http://host.docker.internal:3000
+java.lang.IllegalStateException: The starting URI is not in scope.
+```
 
 ```bash
-# WSL terminal; ZAP must already expose its API on localhost:8080.
-ZAP_API='http://127.0.0.1:8080'
+# WSL terminal; use the running ZAP daemon shown in the retained logs.
+docker ps --filter name=zap-crawl-api
+docker logs --tail 80 zap-crawl-api
+docker port zap-crawl-api 8090/tcp
+# Set this to the host port printed above; 8090 is the rerun example.
+ZAP_API='http://127.0.0.1:8090'
 mkdir -p ~/project-2a/zap-reports
 read -r -s -p 'Local ZAP API key: ' ZAP_API_KEY; echo
 
@@ -353,7 +386,7 @@ curl -sS --get "$ZAP_API/JSON/core/view/version/" \
 # Start a traditional Spider crawl and retain the scan ID returned by ZAP.
 SPIDER_ID="$(curl -sS --get "$ZAP_API/JSON/spider/action/scan/" \
   --data-urlencode "apikey=$ZAP_API_KEY" \
-  --data-urlencode 'url=http://host.docker.internal:3001/' \
+  --data-urlencode 'url=http://host.docker.internal:3000/' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["scan"])')"
 while :; do
   SPIDER_STATUS="$(curl -sS --get "$ZAP_API/JSON/spider/view/status/" \
@@ -369,10 +402,11 @@ curl -sS --get "$ZAP_API/JSON/spider/view/results/" \
   --data-urlencode "scanId=$SPIDER_ID" \
   -o ~/project-2a/zap-reports/spider-results.json
 
+# The rerun leaves inScope unset after the earlier scope error.
 # Start the AJAX Spider, wait until ZAP reports stopped, then save its URLs.
 curl -sS --get "$ZAP_API/JSON/ajaxSpider/action/scan/" \
   --data-urlencode "apikey=$ZAP_API_KEY" \
-  --data-urlencode 'url=http://host.docker.internal:3001/'
+  --data-urlencode 'url=http://host.docker.internal:3000/'
 while :; do
   AJAX_STATUS="$(curl -sS --get "$ZAP_API/JSON/ajaxSpider/view/status/" \
     --data-urlencode "apikey=$ZAP_API_KEY" \
@@ -511,8 +545,10 @@ BASE='http://localhost:3001'
 curl -sS -i --max-time 10 "$BASE/api/Quantitys/"
 curl -sS -i --max-time 10 "$BASE/rest/admin/application-configuration"
 curl -sS -i --max-time 10 "$BASE/rest/admin/application-version"
+curl -sS -i --max-time 10 "$BASE/rest/continue-code"
 curl -sS -i --max-time 10 "$BASE/rest/languages"
 curl -sS -i --max-time 10 "$BASE/rest/products/search?q=apple"
+curl -sS -i --max-time 10 "$BASE/rest/user/whoami"
 curl -sS -i --max-time 10 "$BASE/api/Users"
 curl -sS -i --max-time 10 --get --data-urlencode 'name=Score Board' "$BASE/api/Challenges/"
 curl -sS -D - -o /dev/null --max-time 10 \
@@ -520,6 +556,17 @@ curl -sS -D - -o /dev/null --max-time 10 \
 ```
 
 I recorded HTTP status, selected response headers, and the body where available. I reviewed the application-configuration response for the disclosed IP/timestamp values and common secret-like property names; no secret was confirmed. `/api/Users` returned `401` anonymously. These requests do not change application state.
+
+I also tried a normal search and a single-quote search during one unstable tunnel period. Both timed out, so I excluded those attempts from the injection evidence. The separate ZAP API Scan later produced the HTTP 500 alert on the quote-containing search, and the source review showed the unsafe SQL construction:
+
+```bash
+# WSL terminal; these were response checks, not data-extraction attempts.
+BASE='http://localhost:3001'
+curl -sS -i --max-time 10 --get --data-urlencode 'q=apple' \
+  "$BASE/rest/products/search"
+curl -sS -i --max-time 10 --get --data-urlencode "q='" \
+  "$BASE/rest/products/search"
+```
 
 For example, the public `/api/Quantitys/` endpoint returned 56 inventory records with exact quantities and per-user purchase limits. This was recorded as a potential business-data exposure for an owner to assess, because the evidence did not define whether the lab intended those values to be public. The anonymous `/api/Users` request returned `401`, which was positive evidence that anonymous access was denied on that route.
 
