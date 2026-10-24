@@ -1,10 +1,11 @@
 # Juice Shop DevSecOps API Security Lab
 
-Private lab repository containing the assessment deliverables for OWASP Juice Shop v20.3.0.
+Private lab repository containing the OWASP Juice Shop v20.3.0 security assessment deliverables.
 
 ## Assessment package
 
 - [Consolidated assessment report](assessment/assessment-report-inventory.md)
+- [First-pass finding triage](assessment/triage-review.md)
 - [Risk register](assessment/risk-register.md)
 - [Detailed SCA and SAST risk register (CSV)](assessment/risk-register-sca-sast.csv)
 - [SCA individual findings](assessment/sca-individual-findings.md)
@@ -12,4 +13,4 @@ Private lab repository containing the assessment deliverables for OWASP Juice Sh
 - [DAST individual findings](assessment/dast-individual-findings.md)
 - [Manual API findings](assessment/manual-api-findings.md)
 
-The six API remediation tickets are GitHub Issues #1–#6. The lab documents findings and ownership workflow; application code remediation is outside this lab stage. Scanner severities are kept separate from proposed lab risk ratings.
+The six API remediation tickets are GitHub Issues #1–#6. The lab documents findings, triage, and ownership workflow; application code remediation is outside this lab stage. Scanner severities are kept separate from proposed lab risk ratings.
